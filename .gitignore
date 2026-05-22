@@ -1,0 +1,103 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# uv / venv
+.venv/
+venv/
+ENV/
+.python-version
+uv.lock
+
+# Model weights and artifacts — NEVER commit
+models/
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.pth
+
+# Adapters — local only, may contain user-trained personal data
+adapters/*.bin
+adapters/*.safetensors
+adapters/*/checkpoint-*/
+adapters/*.gguf
+
+# LoRA training outputs
+outputs/
+runs/
+wandb/
+logs/
+
+# Memory store — contains user personal data
+.lamark/
+data/memory/
+data/embeddings/
+data/lancedb/
+data/honcho/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Curated training data — contains personal conversations
+data/curated/
+data/raw/
+data/redacted/
+data/replay_buffer/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Smoke test results (kept out of git — Spark-specific)
+smoke_test_results/
+*.smoke.json
