@@ -32,10 +32,14 @@ def isolated_lamark_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ite
 
 @pytest.fixture
 def cli_runner():
-    """Typer / Click test runner for CLI invocations."""
+    """Typer / Click test runner for CLI invocations.
+
+    Click 8.2 removed the `mix_stderr` kwarg; default behaviour streams stderr
+    separately on modern Click, so tests check both result.stdout and result.stderr.
+    """
     from typer.testing import CliRunner
 
-    return CliRunner(mix_stderr=False)
+    return CliRunner()
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
