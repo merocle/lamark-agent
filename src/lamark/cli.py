@@ -90,13 +90,48 @@ def memory(action: str = typer.Argument("show", help="show | clear | export")) -
 
 
 @app.command("bootstrap")
-def bootstrap() -> None:
-    """Day-0 onboarding wizard (Phase 1 module 8)."""
+def bootstrap(
+    name: str = typer.Option(None, "--name", help="Your name (skips prompt if set)."),
+    locale: str = typer.Option(None, "--locale", help="Locale like en-US / ru-RU."),
+    role: str = typer.Option(None, "--role", help="What you do (comma-separated facts)."),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive/--non-interactive",
+        help="Prompt for any unspecified fields.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Wipe existing UserModel and re-bootstrap (destructive).",
+    ),
+) -> None:
+    """Day-0 onboarding wizard — seed UserModel + initial facts."""
+    from lamark.bootstrap import run_bootstrap
+    from lamark.memory import MemoryStore
+
+    cfg = load_config()
+    cfg.honcho_db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with MemoryStore.open(cfg.honcho_db_path) as store:
+        try:
+            result = run_bootstrap(
+                store=store,
+                name=name,
+                locale=locale,
+                role=role,
+                interactive=interactive,
+                force=force,
+            )
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+
     console.print(
-        "[yellow]bootstrap[/yellow] is a Phase 1 placeholder — "
-        "wizard lands in module 8 after memory layer is ready."
+        f"[green]✓[/green] Lamark bootstrapped. "
+        f"facts_added={result.facts_added}, user_created={result.user_created}."
     )
-    sys.exit(2)
+    for note in result.notes:
+        console.print(f"  [dim]{note}[/dim]")
 
 
 def main() -> None:
