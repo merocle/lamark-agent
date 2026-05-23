@@ -69,6 +69,7 @@ def run_bootstrap(
     interactive: bool = False,
     force: bool = False,
     prompt_fn: Any = None,
+    archive: Any = None,
 ) -> BootstrapResult:
     """
     Run the Day-0 bootstrap.
@@ -133,12 +134,24 @@ def run_bootstrap(
 
     def _seed(text: str, slot: str) -> None:
         nonlocal facts_added
+        evidence = f"{WIZARD_EVIDENCE_PREFIX}{slot}"
         store.add_fact(
             text=text,
             source=PROVENANCE_USER_EXPLICIT,
             confidence=0.95,
-            evidence=f"{WIZARD_EVIDENCE_PREFIX}{slot}",
+            evidence=evidence,
         )
+        # Dual-write: mirror into the training-data archive (v4 §P1).
+        # Phase 2 will switch to archive-as-primary with the Fact table as the
+        # SQLite index. For Phase 1a we dual-write so the archive is populated
+        # without breaking existing MemoryStore consumers.
+        if archive is not None:
+            archive.write_pair(
+                messages=[{"role": "user", "content": text}],
+                source=PROVENANCE_USER_EXPLICIT,
+                confidence=0.95,
+                evidence_path=evidence,
+            )
         facts_added += 1
 
     if name:

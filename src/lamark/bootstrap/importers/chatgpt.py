@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from lamark.memory import MemoryStore, PROVENANCE_IMPORTED
 from lamark.redaction import RedactionPipeline
@@ -71,6 +72,7 @@ def import_chatgpt_export(
     export_path: Path | str,
     *,
     deny_phrases: list[str] | None = None,
+    archive: Any = None,
 ) -> ImportResult:
     """Read a ChatGPT export and persist redacted user messages as Facts.
 
@@ -119,6 +121,13 @@ def import_chatgpt_export(
             confidence=0.85,  # accumulated history — confident but not authoritative
             evidence="chatgpt_export",
         )
+        if archive is not None:
+            archive.write_pair(
+                messages=[{"role": "user", "content": text}],
+                source=PROVENANCE_IMPORTED,
+                confidence=0.85,
+                evidence_path="chatgpt_export",
+            )
 
     return ImportResult(
         facts_added=len(prepared),

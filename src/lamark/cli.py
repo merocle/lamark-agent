@@ -122,7 +122,8 @@ def bootstrap(
         help="Wipe existing UserModel and re-bootstrap (destructive).",
     ),
 ) -> None:
-    """Day-0 onboarding wizard — seed UserModel + initial facts."""
+    """Day-0 onboarding wizard — seed identity facts + (optionally) import history."""
+    from lamark.archive import Archive
     from lamark.bootstrap import run_bootstrap
     from lamark.bootstrap.importers import import_chatgpt_export
     from lamark.memory import MemoryStore
@@ -130,6 +131,8 @@ def bootstrap(
 
     cfg = load_config()
     cfg.honcho_db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Phase 1a: training-data archive lives next to the SQLite db
+    archive = Archive.open(cfg.home / "archive")
 
     with MemoryStore.open(cfg.honcho_db_path) as store:
         try:
@@ -140,6 +143,7 @@ def bootstrap(
                 role=role,
                 interactive=interactive,
                 force=force,
+                archive=archive,
             )
         except RuntimeError as e:
             console.print(f"[red]{e}[/red]")
@@ -154,7 +158,7 @@ def bootstrap(
 
         if chatgpt is not None:
             try:
-                imp = import_chatgpt_export(store, chatgpt)
+                imp = import_chatgpt_export(store, chatgpt, archive=archive)
             except SecretFound as e:
                 console.print(
                     f"[red]✗ ChatGPT import halted — verified secret detected ({e.category}). "
@@ -171,7 +175,7 @@ def bootstrap(
             from lamark.bootstrap.importers import import_obsidian_vault
 
             try:
-                obs_imp = import_obsidian_vault(store, obsidian)
+                obs_imp = import_obsidian_vault(store, obsidian, archive=archive)
             except SecretFound as e:
                 console.print(
                     f"[red]✗ Obsidian import halted — verified secret detected ({e.category}). "

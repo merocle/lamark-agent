@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from lamark.memory import MemoryStore, PROVENANCE_IMPORTED
 from lamark.redaction import RedactionPipeline
@@ -100,6 +101,7 @@ def import_obsidian_vault(
     max_bytes: int = DEFAULT_MAX_BYTES,
     max_chars: int = DEFAULT_MAX_CHARS,
     deny_phrases: list[str] | None = None,
+    archive: Any = None,
 ) -> ImportResult:
     """Walk vault, redact, write Facts atomically."""
     vault = Path(vault_path)
@@ -127,6 +129,13 @@ def import_obsidian_vault(
             confidence=0.85,
             evidence=evidence,
         )
+        if archive is not None:
+            archive.write_pair(
+                messages=[{"role": "user", "content": text}],
+                source=PROVENANCE_IMPORTED,
+                confidence=0.85,
+                evidence_path=evidence,
+            )
 
     return ImportResult(
         files_processed=files_seen - skipped_empty,
