@@ -22,6 +22,12 @@ GPU_MEMORY_UTILIZATION="${LAMARK_GPU_UTIL:-0.85}"
 MAX_LORAS="${LAMARK_MAX_LORAS:-4}"
 MAX_LORA_RANK="${LAMARK_MAX_LORA_RANK:-64}"
 
+# Phase 2 LoRA-serving flags. Off by default — only enable when
+# adapters exist AND the installed vLLM version supports them.
+# (vLLM 0.7.x doesn't have --enable-mixed-moe-lora-format yet; later
+# versions per Kreuzhofer doc do.)
+ENABLE_LORA="${LAMARK_ENABLE_LORA:-0}"
+
 case "${1:-}" in
     --stop)
         docker stop "$CONTAINER_NAME" 2>/dev/null || echo "  (not running)"
@@ -96,14 +102,17 @@ CMD=(
             export PYTHONSTARTUP=/workspace/lamark-agent/scripts/eager_loader_patch.py
         fi
 
+        LORA_ARGS=''
+        if [ '$ENABLE_LORA' = '1' ]; then
+            LORA_ARGS=\"--enable-lora --max-loras $MAX_LORAS --max-lora-rank $MAX_LORA_RANK\"
+        fi
+
         exec vllm serve '$PRIMARY_MODEL' \
             --quantization '$PRIMARY_QUANT' \
             --tensor-parallel-size 1 \
             --enable-expert-parallel \
-            --enable-lora --enable-mixed-moe-lora-format \
+            \$LORA_ARGS \
             --gpu-memory-utilization $GPU_MEMORY_UTILIZATION \
-            --max-loras $MAX_LORAS \
-            --max-lora-rank $MAX_LORA_RANK \
             --host 0.0.0.0 --port $PORT \
             --trust-remote-code
     "
