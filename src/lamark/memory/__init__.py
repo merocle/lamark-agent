@@ -10,6 +10,7 @@ Hard rules (enforced by the schema):
 
 from __future__ import annotations
 
+from lamark.memory.recall import recall
 from lamark.memory.schema import (
     PROVENANCE_AGENT_SELF_EDIT,
     PROVENANCE_BOOTSTRAP,
@@ -31,6 +32,7 @@ __all__ = [
     "Conversation",
     "Message",
     "Skill",
+    "recall",
     "VALID_PROVENANCE",
     "PROVENANCE_BOOTSTRAP",
     "PROVENANCE_USER_EXPLICIT",
