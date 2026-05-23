@@ -8,11 +8,12 @@ semantics. Free functions would scatter session management.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy import create_engine, delete, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -38,6 +39,7 @@ class MemoryStore:
         self._engine = engine
         self._sessionmaker = sessionmaker(bind=engine, expire_on_commit=False)
         Base.metadata.create_all(engine)
+        self._init_skill_fts()
 
     @classmethod
     def open(cls, db_path: Path | str) -> MemoryStore:
@@ -233,6 +235,84 @@ class MemoryStore:
             session.commit()
             session.refresh(skill)
             return skill
+
+    # -- skill search (FTS5) ----------------------------------------------
+
+    def _init_skill_fts(self) -> None:
+        """Create the FTS5 virtual table + triggers mirroring the skill table.
+
+        Uses contentless-mode (content='skill') so the FTS index references
+        rows in the actual skill table by rowid; we populate via triggers on
+        INSERT/UPDATE/DELETE rather than maintaining two writes manually.
+        """
+        with self._engine.begin() as conn:
+            conn.exec_driver_sql(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS skill_fts USING fts5("
+                "name, description, content='skill', content_rowid='id', "
+                "tokenize='unicode61 remove_diacritics 2'"
+                ")"
+            )
+            # Sync triggers — keep skill_fts in lockstep with skill writes.
+            conn.exec_driver_sql(
+                "CREATE TRIGGER IF NOT EXISTS skill_ai_fts AFTER INSERT ON skill BEGIN "
+                "INSERT INTO skill_fts(rowid, name, description) "
+                "VALUES (new.id, new.name, new.description); END"
+            )
+            conn.exec_driver_sql(
+                "CREATE TRIGGER IF NOT EXISTS skill_ad_fts AFTER DELETE ON skill BEGIN "
+                "INSERT INTO skill_fts(skill_fts, rowid, name, description) "
+                "VALUES('delete', old.id, old.name, old.description); END"
+            )
+            conn.exec_driver_sql(
+                "CREATE TRIGGER IF NOT EXISTS skill_au_fts AFTER UPDATE ON skill BEGIN "
+                "INSERT INTO skill_fts(skill_fts, rowid, name, description) "
+                "VALUES('delete', old.id, old.name, old.description); "
+                "INSERT INTO skill_fts(rowid, name, description) "
+                "VALUES (new.id, new.name, new.description); END"
+            )
+            # In case rows were inserted before triggers (e.g. legacy DBs), reindex once.
+            conn.exec_driver_sql(
+                "INSERT INTO skill_fts(rowid, name, description) "
+                "SELECT s.id, s.name, s.description FROM skill s "
+                "WHERE NOT EXISTS (SELECT 1 FROM skill_fts f WHERE f.rowid = s.id)"
+            )
+
+    @staticmethod
+    def _sanitize_fts_query(query: str) -> str:
+        """Strip FTS5-special characters and reduce to safe term-OR query.
+
+        FTS5 treats ", *, (), and standalone AND/OR/NEAR as operators —
+        unbalanced quotes or parens raise sqlite errors. The safe path:
+        extract alphanumeric+unicode word characters and OR them together.
+        """
+        # Keep word chars + spaces; drop quotes / parens / operators
+        cleaned = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
+        tokens = [t for t in cleaned.split() if t]
+        if not tokens:
+            return ""
+        # Quote each token to avoid FTS5 treating it as an operator
+        return " OR ".join(f'"{tok}"' for tok in tokens)
+
+    def skill_search(self, query: str, limit: int = 10) -> list[Skill]:
+        """Full-text search over Skill.name + Skill.description; bm25-ranked."""
+        fts_query = self._sanitize_fts_query(query)
+        if not fts_query:
+            return []
+        sql = text(
+            "SELECT skill.* FROM skill "
+            "JOIN skill_fts ON skill.id = skill_fts.rowid "
+            "WHERE skill_fts MATCH :q "
+            "ORDER BY bm25(skill_fts) "
+            "LIMIT :lim"
+        )
+        with self._sessionmaker() as session:
+            rows = session.execute(sql, {"q": fts_query, "lim": limit}).all()
+            ids = [r._mapping["id"] for r in rows]
+            if not ids:
+                return []
+            # Re-fetch via ORM, preserve bm25 ranking
+            skills = {s.id: s for s in session.scalars(select(Skill).where(Skill.id.in_(ids)))}
+            return [skills[i] for i in ids if i in skills]
 
     # -- destructive --------------------------------------------------------
 
