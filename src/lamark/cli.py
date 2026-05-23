@@ -72,13 +72,99 @@ def config_show() -> None:
 @app.command("chat")
 def chat(
     message: str = typer.Argument(..., help="Message to send to Lamark."),
+    no_memory: bool = typer.Option(
+        False,
+        "--no-memory",
+        help="Skip recall — don't inject any facts into the system prompt.",
+    ),
+    system: typing.Optional[str] = typer.Option(
+        None,
+        "--system",
+        help="Custom persona / system prompt (overrides default).",
+    ),
+    max_tokens: int = typer.Option(
+        512,
+        "--max-tokens",
+        help="Max tokens to generate.",
+    ),
+    k: int = typer.Option(
+        20,
+        "-k",
+        "--memory-k",
+        help="How many top-K facts to inject from memory.",
+    ),
 ) -> None:
-    """Send a single message (Phase 1: agent + memory + inference router not wired yet)."""
-    console.print(
-        "[yellow]chat[/yellow] subcommand is a Phase 1 placeholder — "
-        "module 6 (inference router) and module 7 (Hermes fork) must land first."
+    """Send a message to Lamark — memory-injected, locally-routed.
+
+    MVP single-turn (Phase 1a). Phase 1b adds cloud-anonymized fallback;
+    Module 10 will layer Hermes underneath for multi-turn agent loop.
+    """
+    from lamark.archive import Archive
+    from lamark.inference import InferenceRouter, OpenAIChatClient, RoutingContext
+    from lamark.memory import MemoryStore, recall
+
+    cfg = load_config()
+    cfg.honcho_db_path.parent.mkdir(parents=True, exist_ok=True)
+    archive = Archive.open(cfg.home / "archive")
+
+    # Step 1 — recall relevant facts
+    facts: list = []
+    if not no_memory:
+        with MemoryStore.open(cfg.honcho_db_path) as store:
+            facts = recall(store, query=message, k=k)
+
+    # Step 2 — assemble system prompt
+    system_lines: list[str] = []
+    if system:
+        system_lines.append(system)
+    else:
+        system_lines.append(
+            "You are Lamark, the user's locally-hosted personal AI agent. "
+            "Use the facts below as context; reply concisely in the user's language."
+        )
+    if facts:
+        system_lines.append("\n## What we know about the user")
+        for f in facts:
+            system_lines.append(f"- {f.text}")
+    system_prompt = "\n".join(system_lines)
+
+    # Step 3 — route + call
+    router = InferenceRouter(
+        primary_endpoint=cfg.inference.primary_endpoint,
+        dense_endpoint=cfg.inference.dense_endpoint,
+        primary_model=cfg.inference.primary_model,
+        dense_model=cfg.inference.dense_model,
+        primary_quantization=cfg.inference.primary_quantization,
+        dense_quantization=cfg.inference.dense_quantization,
     )
-    sys.exit(2)
+    backend = router.choose(RoutingContext(prompt=message))
+    client = OpenAIChatClient(endpoint=backend.endpoint, model=backend.model)
+
+    try:
+        result = client.chat(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message},
+            ],
+            max_tokens=max_tokens,
+        )
+    except RuntimeError as e:
+        console.print(
+            f"[red]✗ Inference failed[/red] (backend={backend.name} at {backend.endpoint}): {e}"
+        )
+        raise typer.Exit(1) from None
+
+    # Step 4 — print + archive
+    console.print(result.content)
+    archive.write_pair(
+        messages=[
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": result.content},
+        ],
+        source="user_explicit",
+        confidence=0.9,
+        evidence_path="chat_turn",
+    )
 
 
 @app.command("memory")
