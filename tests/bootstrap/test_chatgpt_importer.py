@@ -105,7 +105,6 @@ def test_imports_only_user_messages(fresh_store, chatgpt_export: Path) -> None:
     """Assistant messages must NOT become facts about the user."""
     from lamark.bootstrap.importers.chatgpt import import_chatgpt_export
 
-    fresh_store.create_user_model(name="Anna")  # importer assumes user model exists
     result = import_chatgpt_export(fresh_store, chatgpt_export)
 
     assert result.facts_added == 4  # two user msgs per conv × two convs
@@ -128,7 +127,6 @@ def test_imported_facts_have_imported_provenance(fresh_store, chatgpt_export: Pa
     from lamark.bootstrap.importers.chatgpt import import_chatgpt_export
     from lamark.memory import PROVENANCE_IMPORTED
 
-    fresh_store.create_user_model(name="Anna")
     import_chatgpt_export(fresh_store, chatgpt_export)
 
     from sqlalchemy import select
@@ -150,7 +148,6 @@ def test_pii_in_export_is_redacted_before_storage(fresh_store, tmp_path: Path) -
     export_path = tmp_path / "conversations.json"
     export_path.write_text(json.dumps([conv]), encoding="utf-8")
 
-    fresh_store.create_user_model(name="Alice")
     import_chatgpt_export(fresh_store, export_path)
 
     from sqlalchemy import select
@@ -183,7 +180,6 @@ def test_verified_secret_in_export_blocks_entire_import(fresh_store, tmp_path: P
     export_path = tmp_path / "conversations.json"
     export_path.write_text(json.dumps([conv1, conv2]), encoding="utf-8")
 
-    fresh_store.create_user_model(name="Alice")
     with pytest.raises(SecretFound):
         import_chatgpt_export(fresh_store, export_path)
 
@@ -205,7 +201,9 @@ def test_cli_bootstrap_with_chatgpt_flag(cli_runner, isolated_lamark_home: Path,
 
     store = MemoryStore.open(isolated_lamark_home / "honcho.db")
     try:
-        # 4 imported user messages
-        assert store.count_facts() == 4
+        # Wizard seeds: name (1) + locale (1) = 2 wizard facts
+        # ChatGPT import: 4 user messages
+        # Total: 6
+        assert store.count_facts() == 6
     finally:
         store.close()

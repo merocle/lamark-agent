@@ -1,11 +1,14 @@
-"""Lamark memory layer — Honcho-style user model + cross-session recall + skill library.
+"""Lamark training-data archive — Facts + Conversation log + Skills.
+
+Per v4 §"Architectural principles" P1, this is the durable asset of the project.
+LoRA adapters are derivative; this archive survives every model rotation.
 
 Hard rules (enforced by the schema):
-- Single-row UserModel (Lamark is single-user).
-- Persona fields immune to agent self-edits unless user_explicit source is used.
 - Every Fact carries provenance, confidence, timestamp.
-- Provenance is enum-restricted.
-- delete_user_data is destructive and requires confirm=True.
+- Provenance is enum-restricted (bootstrap / user_explicit / agent_self_edit / imported).
+- Fact.confidence is in [0.0, 1.0] (CHECK constraint).
+- Conversation→Message cascades on delete.
+- Per-entry removal via delete_fact_where(text_contains / text_exact / evidence_prefix / source).
 """
 
 from __future__ import annotations
@@ -21,13 +24,11 @@ from lamark.memory.schema import (
     Fact,
     Message,
     Skill,
-    UserModel,
 )
 from lamark.memory.store import MemoryStore
 
 __all__ = [
     "MemoryStore",
-    "UserModel",
     "Fact",
     "Conversation",
     "Message",

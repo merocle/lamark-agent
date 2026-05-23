@@ -25,7 +25,6 @@ def store_with_facts(isolated_lamark_home: Path):
     from lamark.memory.schema import Fact
 
     s = MemoryStore.open(isolated_lamark_home / "honcho.db")
-    s.create_user_model(name="Anna")
 
     # We control the timestamp by sneaking SQLAlchemy updates after insert.
     now = datetime.now(UTC)
@@ -92,7 +91,6 @@ def test_recall_empty_store_returns_empty(isolated_lamark_home: Path) -> None:
     from lamark.memory.recall import recall
 
     with MemoryStore.open(isolated_lamark_home / "fresh.db") as s:
-        s.create_user_model(name="Empty")
         hits = recall(s, query="anything", k=5)
         assert hits == []
 

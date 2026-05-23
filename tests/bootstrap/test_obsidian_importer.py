@@ -64,7 +64,6 @@ def fresh_store(isolated_lamark_home: Path):
     from lamark.memory import MemoryStore
 
     s = MemoryStore.open(isolated_lamark_home / "honcho.db")
-    s.create_user_model(name="Anna")
     yield s
     s.close()
 
@@ -207,7 +206,9 @@ def test_cli_bootstrap_with_obsidian_flag(
 
     store = MemoryStore.open(isolated_lamark_home / "honcho.db")
     try:
-        # 2 .md files imported
-        assert store.count_facts() == 2
+        # Wizard seeds: name (1) = 1 wizard fact
+        # Obsidian import: 2 .md files
+        # Total: 3
+        assert store.count_facts() == 3
     finally:
         store.close()

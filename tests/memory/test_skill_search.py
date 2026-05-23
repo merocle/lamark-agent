@@ -19,7 +19,6 @@ def store_with_skills(isolated_lamark_home: Path):
     from lamark.memory import MemoryStore
 
     s = MemoryStore.open(isolated_lamark_home / "honcho.db")
-    s.create_user_model(name="Demo")
     s.register_skill(
         name="weekly_summary",
         version="0.1.0",

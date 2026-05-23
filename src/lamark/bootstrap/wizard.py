@@ -1,25 +1,37 @@
 """
-Day-0 bootstrap wizard.
+Day-0 bootstrap wizard (v4 refactor).
 
-Either fully interactive (prompts for everything) or driven entirely by
-kwargs / CLI flags. Result: a fresh UserModel + seed Fact rows in the
-MemoryStore, all flagged with provenance="bootstrap" so future memory
-consumers know these are seed data, not agent-inferred.
+Pre-v4: wrote a UserModel row with name/locale/persona/style + seed Facts.
+v4 dropped UserModel because nothing downstream branched on it. Now the
+wizard writes **only Facts** with `source=user_explicit`, evidence tagged
+`bootstrap-wizard:<field>` so a future re-run can wipe them via
+`delete_fact_where(evidence_prefix="bootstrap-wizard:")`.
+
+When Module 10 (Hermes fork patches) lands, the wizard will ALSO write
+the same identity into Hermes's USER.md so the agent loop sees it in
+its system prompt. Phase 1a ships archive-only.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
-from lamark.memory import MemoryStore, PROVENANCE_BOOTSTRAP, PROVENANCE_USER_EXPLICIT
+from lamark.memory import (
+    MemoryStore,
+    PROVENANCE_USER_EXPLICIT,
+)
+
+# Evidence prefix marker — lets a force-reset wipe wizard-seeded facts cleanly.
+WIZARD_EVIDENCE_PREFIX = "bootstrap-wizard:"
 
 
 @dataclass(frozen=True)
 class BootstrapResult:
     """Summary of what the wizard wrote."""
 
-    user_created: bool
+    user_created: bool  # kept for back-compat with CLI message
     facts_added: int
     notes: tuple[str, ...] = ()
 
@@ -30,6 +42,20 @@ def _facts_from_role(role: str | None) -> list[str]:
         return []
     chunks = [c.strip() for c in role.split(",") if c.strip()]
     return chunks or [role.strip()]
+
+
+def _already_bootstrapped(store: MemoryStore) -> bool:
+    """Check whether a previous wizard run left identity facts behind."""
+    from sqlalchemy import func, select
+    from lamark.memory.schema import Fact
+
+    with store._sessionmaker() as session:  # type: ignore[attr-defined]
+        count = session.scalar(
+            select(func.count(Fact.id)).where(
+                Fact.evidence.like(f"{WIZARD_EVIDENCE_PREFIX}%")
+            )
+        )
+        return bool(count and count > 0)
 
 
 def run_bootstrap(
@@ -51,7 +77,7 @@ def run_bootstrap(
         store: open MemoryStore (caller owns the lifecycle).
         name, locale, role, style, persona: explicit values (skip prompts).
         interactive: ask via prompt_fn for any unset field.
-        force: if a UserModel exists, wipe and recreate. Without this, raise.
+        force: if a previous bootstrap exists, wipe its facts and re-seed.
         prompt_fn: callable(question, default=None) -> str; defaults to
             typer.prompt when interactive=True.
 
@@ -59,16 +85,15 @@ def run_bootstrap(
         BootstrapResult.
 
     Raises:
-        RuntimeError: UserModel already exists and force=False.
+        RuntimeError: prior wizard run detected and force=False.
     """
-    existing = store.get_user_model()
-    if existing is not None and not force:
+    if _already_bootstrapped(store) and not force:
         raise RuntimeError(
-            "Bootstrap refusing: a UserModel already exists "
-            f"(name={existing.name!r}). Pass force=True to wipe and re-bootstrap."
+            "Bootstrap refusing: Lamark already has wizard-seeded identity facts. "
+            "Pass force=True to wipe and re-bootstrap."
         )
-    if existing is not None and force:
-        store.delete_user_data(confirm=True)
+    if force:
+        store.delete_fact_where(evidence_prefix=WIZARD_EVIDENCE_PREFIX)
 
     if prompt_fn is None and interactive:
         import typer
@@ -87,7 +112,6 @@ def run_bootstrap(
     locale = maybe_ask(locale, "Locale (e.g. en-US, ru-RU)", default=None)
     role = maybe_ask(role, "What do you do? (free text — separate facts with commas)", default=None)
 
-    # Style — interactive only if user asks; non-interactive can pass dict directly
     if style is None and interactive and prompt_fn is not None:
         length = prompt_fn("Preferred reply length (short / medium / long)", default="medium")
         emojis = prompt_fn("Use emoji in replies? (y/n)", default="n")
@@ -98,31 +122,41 @@ def run_bootstrap(
             "markdown": markdown.strip().lower().startswith("y"),
         }
 
-    # Persona — same pattern
     if persona is None and interactive and prompt_fn is not None:
         tone = prompt_fn("Persona tone (one word, e.g. concise / warm / formal)", default="")
         humour = prompt_fn("Humour (one word, e.g. dry / playful / off)", default="")
         persona = {k: v for k, v in (("tone", tone.strip()), ("humour", humour.strip())) if v}
 
-    # Create the UserModel — wizard writes are PROVENANCE_USER_EXPLICIT, NOT
-    # bootstrap (so persona is locked correctly for future agent self-edits).
-    store.create_user_model(name=name, locale=locale, persona=persona, style=style)
-
-    # Seed facts from role text
+    # Write Facts. All wizard writes are PROVENANCE_USER_EXPLICIT (high authority)
+    # tagged with evidence prefix so force-reset can wipe them.
     facts_added = 0
-    for chunk in _facts_from_role(role):
+
+    def _seed(text: str, slot: str) -> None:
+        nonlocal facts_added
         store.add_fact(
-            text=chunk,
-            source=PROVENANCE_BOOTSTRAP,
+            text=text,
+            source=PROVENANCE_USER_EXPLICIT,
             confidence=0.95,
-            evidence="bootstrap-wizard:role",
+            evidence=f"{WIZARD_EVIDENCE_PREFIX}{slot}",
         )
         facts_added += 1
 
+    if name:
+        _seed(f"Name: {name}", "identity.name")
+    if locale:
+        _seed(f"Locale: {locale}", "identity.locale")
+    for chunk in _facts_from_role(role):
+        _seed(chunk, "identity.role")
+    if persona:
+        _seed(f"Persona: {json.dumps(persona, ensure_ascii=False)}", "identity.persona")
+    if style:
+        _seed(f"Style: {json.dumps(style, ensure_ascii=False)}", "identity.style")
+
     return BootstrapResult(
-        user_created=True,
+        user_created=facts_added > 0,
         facts_added=facts_added,
         notes=(
-            f"persona stored as {PROVENANCE_USER_EXPLICIT} (locked against agent self-edit)",
+            f"All wizard facts written with source={PROVENANCE_USER_EXPLICIT} "
+            f"and evidence prefix {WIZARD_EVIDENCE_PREFIX!r}",
         ),
     )

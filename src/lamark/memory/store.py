@@ -1,9 +1,15 @@
 """
-MemoryStore — CRUD wrapper around the schema with invariant enforcement.
+MemoryStore — CRUD wrapper around the schema.
 
-Why a class instead of free functions: tests need a focused, mockable object
-that owns its DB connection, and the agent runtime wants context-manager
-semantics. Free functions would scatter session management.
+Per v4 §"Optimized plan", this class is the training-data archive's primary
+SQLite-backed index (Phase 1: SQLite-only; Phase 2 adds Parquet compaction +
+FTS5 for cross-session recall over Facts).
+
+Per v4 critic-2 findings, UserModel and persona-lock were dropped because
+no downstream code branches on them; their invariants were write-only.
+`delete_user_data(confirm=True)` was replaced by per-entry
+`delete_fact_where(text_pattern)` to match Hermes's `memory(remove, content=X)`
+ergonomics for the realistic "forget Berlin" UX.
 """
 
 from __future__ import annotations
@@ -18,22 +24,17 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from lamark.memory.schema import (
-    PERSONA_LOCKED_SOURCES,
-    PROVENANCE_USER_EXPLICIT,
     VALID_PROVENANCE,
     Base,
     Conversation,
     Fact,
     Message,
     Skill,
-    UserModel,
 )
-
-PERSONA_LOCKED_FIELDS = {"persona"}
 
 
 class MemoryStore:
-    """SQLite-backed memory store. Single-user; thread-safe at the session level."""
+    """SQLite-backed training-data archive. Thread-safe at the session level."""
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
@@ -77,64 +78,6 @@ class MemoryStore:
                 f"must be one of {sorted(VALID_PROVENANCE)}"
             )
 
-    # -- UserModel ----------------------------------------------------------
-
-    def create_user_model(
-        self,
-        name: str | None = None,
-        locale: str | None = None,
-        persona: dict[str, Any] | None = None,
-        style: dict[str, Any] | None = None,
-    ) -> UserModel:
-        with self._session() as session:
-            existing = session.scalar(select(UserModel).limit(1))
-            if existing is not None:
-                raise ValueError(
-                    "Lamark is single-user — UserModel already exists. "
-                    "Use update_user_model_field to modify."
-                )
-            user = UserModel(
-                is_singleton_row=1,
-                name=name,
-                locale=locale,
-                persona=persona,
-                style=style,
-            )
-            session.add(user)
-            session.commit()
-            session.refresh(user)
-            return user
-
-    def get_user_model(self) -> UserModel | None:
-        with self._session() as session:
-            return session.scalar(select(UserModel).limit(1))
-
-    def update_user_model_field(
-        self,
-        field: str,
-        value: Any,
-        *,
-        source: str,
-    ) -> UserModel:
-        """Update a UserModel field; persona fields are locked against agent edits."""
-        self._validate_source(source)
-        if field in PERSONA_LOCKED_FIELDS and source != PROVENANCE_USER_EXPLICIT:
-            raise PermissionError(
-                f"field {field!r} is persona-locked; "
-                f"source {source!r} cannot modify it. "
-                "Only user_explicit (after user confirmation) may update persona."
-            )
-        with self._session() as session:
-            user = session.scalar(select(UserModel).limit(1))
-            if user is None:
-                raise ValueError("no UserModel exists; call create_user_model first")
-            if not hasattr(user, field):
-                raise AttributeError(f"UserModel has no field {field!r}")
-            setattr(user, field, value)
-            session.commit()
-            session.refresh(user)
-            return user
-
     # -- Fact ---------------------------------------------------------------
 
     def add_fact(
@@ -164,6 +107,51 @@ class MemoryStore:
     def count_facts(self) -> int:
         with self._session() as session:
             return int(session.scalar(select(func.count(Fact.id))) or 0)
+
+    def delete_fact_where(
+        self,
+        *,
+        text_contains: str | None = None,
+        text_exact: str | None = None,
+        evidence_prefix: str | None = None,
+        source: str | None = None,
+    ) -> int:
+        """Delete Facts matching any of the provided predicates (AND-combined).
+
+        Mirrors Hermes's `memory(action=remove, content=X)` semantics — per-entry
+        targeted removal, in contrast to the old (removed) GDPR-cascade wipe.
+
+        Returns the number of rows removed.
+
+        Examples:
+            store.delete_fact_where(text_contains="Berlin")   # forget Berlin
+            store.delete_fact_where(evidence_prefix="bootstrap-wizard:")  # wipe wizard seeds
+            store.delete_fact_where(source="agent_self_edit")  # purge agent inferences
+        """
+        if all(
+            x is None
+            for x in (text_contains, text_exact, evidence_prefix, source)
+        ):
+            raise ValueError(
+                "delete_fact_where requires at least one predicate; "
+                "call with text_contains= / text_exact= / evidence_prefix= / source="
+            )
+        if source is not None:
+            self._validate_source(source)
+
+        with self._session() as session:
+            stmt = delete(Fact)
+            if text_exact is not None:
+                stmt = stmt.where(Fact.text == text_exact)
+            if text_contains is not None:
+                stmt = stmt.where(Fact.text.contains(text_contains))
+            if evidence_prefix is not None:
+                stmt = stmt.where(Fact.evidence.like(f"{evidence_prefix}%"))
+            if source is not None:
+                stmt = stmt.where(Fact.source == source)
+            result = session.execute(stmt)
+            session.commit()
+            return int(result.rowcount or 0)
 
     # -- Conversation + Message --------------------------------------------
 
@@ -279,18 +267,11 @@ class MemoryStore:
 
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:
-        """Strip FTS5-special characters and reduce to safe term-OR query.
-
-        FTS5 treats ", *, (), and standalone AND/OR/NEAR as operators —
-        unbalanced quotes or parens raise sqlite errors. The safe path:
-        extract alphanumeric+unicode word characters and OR them together.
-        """
-        # Keep word chars + spaces; drop quotes / parens / operators
+        """Strip FTS5-special characters and reduce to safe term-OR query."""
         cleaned = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
         tokens = [t for t in cleaned.split() if t]
         if not tokens:
             return ""
-        # Quote each token to avoid FTS5 treating it as an operator
         return " OR ".join(f'"{tok}"' for tok in tokens)
 
     def skill_search(self, query: str, limit: int = 10) -> list[Skill]:
@@ -310,25 +291,8 @@ class MemoryStore:
             ids = [r._mapping["id"] for r in rows]
             if not ids:
                 return []
-            # Re-fetch via ORM, preserve bm25 ranking
             skills = {s.id: s for s in session.scalars(select(Skill).where(Skill.id.in_(ids)))}
             return [skills[i] for i in ids if i in skills]
-
-    # -- destructive --------------------------------------------------------
-
-    def delete_user_data(self, confirm: bool = False) -> None:  # noqa: FBT001, FBT002
-        """Wipe everything. GDPR-style irrevocable delete; requires confirm=True."""
-        if not confirm:
-            raise ValueError(
-                "delete_user_data is destructive — pass confirm=True to proceed"
-            )
-        with self._session() as session:
-            session.execute(delete(Message))
-            session.execute(delete(Conversation))
-            session.execute(delete(Fact))
-            session.execute(delete(Skill))
-            session.execute(delete(UserModel))
-            session.commit()
 
     # -- context manager support -------------------------------------------
 
