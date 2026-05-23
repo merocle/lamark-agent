@@ -103,6 +103,14 @@ def bootstrap(
         exists=True,
         dir_okay=False,
     ),
+    obsidian: typing.Optional[Path] = typer.Option(
+        None,
+        "--obsidian",
+        help="Path to an Obsidian vault directory — imports non-empty .md notes.",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+    ),
     interactive: bool = typer.Option(
         False,
         "--interactive/--non-interactive",
@@ -157,6 +165,22 @@ def bootstrap(
                 f"[green]✓[/green] ChatGPT import: "
                 f"+{imp.facts_added} facts from {imp.conversations_processed} conversations "
                 f"({imp.messages_seen} user messages)"
+            )
+
+        if obsidian is not None:
+            from lamark.bootstrap.importers import import_obsidian_vault
+
+            try:
+                obs_imp = import_obsidian_vault(store, obsidian)
+            except SecretFound as e:
+                console.print(
+                    f"[red]✗ Obsidian import halted — verified secret detected ({e.category}). "
+                    "No partial writes made.[/red]"
+                )
+                raise typer.Exit(1) from None
+            console.print(
+                f"[green]✓[/green] Obsidian import: "
+                f"+{obs_imp.facts_added} facts from {obs_imp.files_processed} notes"
             )
 
 
