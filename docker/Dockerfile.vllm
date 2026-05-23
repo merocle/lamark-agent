@@ -1,0 +1,41 @@
+# Lamark vLLM serving image.
+#
+# Built on NGC PyTorch (which has working torch+CUDA for GB10 sm_121 on aarch64,
+# something upstream pip wheels don't currently provide). We add vLLM and the
+# fine-tune toolchain on top so the same image runs both inference and Phase 2
+# LoRA training.
+#
+# Build:
+#   docker build -f docker/Dockerfile.vllm -t lamark/vllm:25.10 .
+#
+# Run via scripts/vllm_server.sh — it expects this tag.
+
+FROM nvcr.io/nvidia/pytorch:25.10-py3
+
+# vLLM is the inference engine; transformers/peft/trl/accelerate the FT stack;
+# unsloth is the MoE fine-tune kernel path (per Kreuzhofer doc).
+#
+# Versions intentionally unpinned at the minor level inside the image so an
+# image rebuild picks up new vLLM releases compatible with the base torch.
+# The pip resolver inside the container will reject anything that conflicts
+# with the pre-installed torch.
+RUN pip install --no-cache-dir \
+        "vllm>=0.7" \
+        "transformers>=4.45" \
+        "accelerate>=0.34" \
+        "peft>=0.13" \
+        "trl>=0.11" \
+        "hf_transfer>=0.1.8" \
+        "sentencepiece>=0.2" \
+        "huggingface_hub>=0.25"
+
+# Smoke-check that vLLM imports inside the build so we fail fast at build
+# time instead of at runtime.
+RUN python -c "import vllm; print(f'vllm {vllm.__version__} ok')"
+
+# Provide a quick `--version` for the image itself
+LABEL org.opencontainers.image.title="lamark-vllm" \
+      org.opencontainers.image.description="vLLM + FT stack on NGC PyTorch for DGX Spark sm_121" \
+      org.opencontainers.image.source="https://github.com/lamark-agent/lamark-agent"
+
+WORKDIR /workspace

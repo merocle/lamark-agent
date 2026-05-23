@@ -61,7 +61,7 @@ if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
     exit 4
 fi
 
-NGC_IMAGE="${NGC_IMAGE:-nvcr.io/nvidia/pytorch:25.10-py3}"
+NGC_IMAGE="${NGC_IMAGE:-lamark/vllm:25.10}"
 
 # vLLM serve args for MoE + LoRA hot-swap per Kreuzhofer recipe:
 #   --enable-expert-parallel: required for MoE
@@ -74,7 +74,7 @@ CMD=(
     docker run
     $DETACH_FLAG
     --name "$CONTAINER_NAME"
-    --rm
+    --restart=no
     --gpus all
     --network host
     --shm-size=16g
@@ -90,10 +90,12 @@ CMD=(
     -w /workspace
     "$NGC_IMAGE"
     bash -lc "
+        set -e
         # Activate the eager-loader patch (helps with mmap+CUDA double allocation)
         if [ -f /workspace/lamark-agent/scripts/eager_loader_patch.py ]; then
             export PYTHONSTARTUP=/workspace/lamark-agent/scripts/eager_loader_patch.py
         fi
+
         exec vllm serve '$PRIMARY_MODEL' \
             --quantization '$PRIMARY_QUANT' \
             --tensor-parallel-size 1 \
