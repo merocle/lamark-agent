@@ -1,0 +1,51 @@
+{
+  "timestamp": "2026-05-23T19:11:35Z",
+  "hostname": "spark-01",
+  "endpoint": "http://127.0.0.1:8000/v1",
+  "model": "/workspace/models/hf/Qwen_Qwen3.6-35B-A3B",
+  "passed": true,
+  "severity": "pass",
+  "metrics": {
+    "median_tok_per_s": 52.75,
+    "min_tok_per_s": 52.25,
+    "max_tok_per_s": 52.86
+  },
+  "runs": [
+    {
+      "run": 0,
+      "tokens": 128,
+      "seconds": 2.426,
+      "tok_per_s": 52.77
+    },
+    {
+      "run": 1,
+      "tokens": 128,
+      "seconds": 2.45,
+      "tok_per_s": 52.25
+    },
+    {
+      "run": 2,
+      "tokens": 128,
+      "seconds": 2.427,
+      "tok_per_s": 52.75
+    },
+    {
+      "run": 3,
+      "tokens": 128,
+      "seconds": 2.422,
+      "tok_per_s": 52.86
+    },
+    {
+      "run": 4,
+      "tokens": 128,
+      "seconds": 2.429,
+      "tok_per_s": 52.69
+    }
+  ],
+  "notes": [
+    "\u2713 endpoint reachable; serving: ['/workspace/models/hf/Qwen_Qwen3.6-35B-A3B']",
+    "\u2713 PASS median 52.8 tok/s (envelope: hard-fail 22.0, warn 25.0, ref 28.0, ceiling 91.0)"
+  ],
+  "hard_fail_threshold_tok_s": 22.0,
+  "rikkarth_reference_tok_s": 28.0
+}
