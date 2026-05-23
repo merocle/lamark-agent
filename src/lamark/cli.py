@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import sys
+import typing
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -94,6 +96,13 @@ def bootstrap(
     name: str = typer.Option(None, "--name", help="Your name (skips prompt if set)."),
     locale: str = typer.Option(None, "--locale", help="Locale like en-US / ru-RU."),
     role: str = typer.Option(None, "--role", help="What you do (comma-separated facts)."),
+    chatgpt: typing.Optional[Path] = typer.Option(
+        None,
+        "--chatgpt",
+        help="Path to ChatGPT export conversations.json — imports historical user messages.",
+        exists=True,
+        dir_okay=False,
+    ),
     interactive: bool = typer.Option(
         False,
         "--interactive/--non-interactive",
@@ -107,7 +116,9 @@ def bootstrap(
 ) -> None:
     """Day-0 onboarding wizard — seed UserModel + initial facts."""
     from lamark.bootstrap import run_bootstrap
+    from lamark.bootstrap.importers import import_chatgpt_export
     from lamark.memory import MemoryStore
+    from lamark.redaction import SecretFound
 
     cfg = load_config()
     cfg.honcho_db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,12 +137,27 @@ def bootstrap(
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
 
-    console.print(
-        f"[green]✓[/green] Lamark bootstrapped. "
-        f"facts_added={result.facts_added}, user_created={result.user_created}."
-    )
-    for note in result.notes:
-        console.print(f"  [dim]{note}[/dim]")
+        console.print(
+            f"[green]✓[/green] Lamark bootstrapped. "
+            f"facts_added={result.facts_added}, user_created={result.user_created}."
+        )
+        for note in result.notes:
+            console.print(f"  [dim]{note}[/dim]")
+
+        if chatgpt is not None:
+            try:
+                imp = import_chatgpt_export(store, chatgpt)
+            except SecretFound as e:
+                console.print(
+                    f"[red]✗ ChatGPT import halted — verified secret detected ({e.category}). "
+                    "No partial writes made.[/red]"
+                )
+                raise typer.Exit(1) from None
+            console.print(
+                f"[green]✓[/green] ChatGPT import: "
+                f"+{imp.facts_added} facts from {imp.conversations_processed} conversations "
+                f"({imp.messages_seen} user messages)"
+            )
 
 
 def main() -> None:
