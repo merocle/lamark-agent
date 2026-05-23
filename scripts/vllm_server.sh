@@ -90,6 +90,12 @@ CMD=(
     -e VLLM_USE_V1=1
     -e VLLM_ALLOW_RUNTIME_LORA_UPDATING=True
     -e TORCH_CUDA_ARCH_LIST=12.1
+    # NGC PyTorch ships a flash_attn binary built against its base torch ABI;
+    # pip install vllm pulls a different torch wheel and the ABI breaks
+    # (undefined symbol on flash_attn_2_cuda import). Force TORCH_SDPA until
+    # we either pin torch in the Dockerfile or rebuild flash_attn from source.
+    -e VLLM_ATTENTION_BACKEND=TORCH_SDPA
+    -e VLLM_USE_FLASH_ATTN=0
     -v "$LAMARK_MODEL_DIR:/workspace/models"
     -v "$HOME/.cache/huggingface:/workspace/.cache/huggingface"
     -v "$LAMARK_HOME/adapters:/workspace/adapters"
@@ -97,6 +103,13 @@ CMD=(
     "$NGC_IMAGE"
     bash -lc "
         set -e
+        # NGC pytorch's pre-installed flash-attn has ABI mismatch with the
+        # torch wheel that pip install vllm pulls in. Uninstall it so vLLM
+        # falls back to torch SDPA (or its own native attention kernels).
+        # Once we pin torch in the Dockerfile or rebuild flash-attn from
+        # source against the matching torch, this can come out.
+        pip uninstall -y flash-attn flash_attn 2>/dev/null || true
+
         # Activate the eager-loader patch (helps with mmap+CUDA double allocation)
         if [ -f /workspace/lamark-agent/scripts/eager_loader_patch.py ]; then
             export PYTHONSTARTUP=/workspace/lamark-agent/scripts/eager_loader_patch.py
