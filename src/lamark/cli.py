@@ -114,14 +114,13 @@ def chat(
             facts = recall(store, query=message, k=k)
 
     # Step 2 — assemble system prompt
+    from lamark.identity import IDENTITY_PROMPT
+
     system_lines: list[str] = []
     if system:
         system_lines.append(system)
     else:
-        system_lines.append(
-            "You are Lamark, the user's locally-hosted personal AI agent. "
-            "Use the facts below as context; reply concisely in the user's language."
-        )
+        system_lines.append(IDENTITY_PROMPT)
     if facts:
         system_lines.append("\n## What we know about the user")
         for f in facts:
@@ -272,6 +271,49 @@ def bootstrap(
                 f"[green]✓[/green] Obsidian import: "
                 f"+{obs_imp.facts_added} facts from {obs_imp.files_processed} notes"
             )
+
+
+@app.command("seed-identity")
+def seed_identity(
+    regenerate: bool = typer.Option(
+        False,
+        "--regenerate",
+        help="Wipe previous identity seeds and re-add (use after editing IDENTITY_PROMPT).",
+    ),
+) -> None:
+    """Write Lamark identity Q&A pairs into the training archive.
+
+    These pairs (~30 paraphrases of who-am-I, what-do-I-do, where-do-I-run,
+    how-do-I-learn) become eligible for the nightly LoRA fine-tune. After
+    enough cycles, the model "knows" its own identity without needing the
+    full IDENTITY_PROMPT injected every time.
+    """
+    from lamark.archive import Archive
+    from lamark.bootstrap.seed_identity import seed_identity_into_archive
+    from lamark.memory import MemoryStore
+
+    cfg = load_config()
+    cfg.honcho_db_path.parent.mkdir(parents=True, exist_ok=True)
+    archive = Archive.open(cfg.home / "archive")
+
+    if regenerate:
+        # Remove previous identity seeds before re-adding
+        with MemoryStore.open(cfg.honcho_db_path) as store:
+            removed = store.delete_fact_where(evidence_prefix="lamark-identity-seed")
+        console.print(f"[dim]Cleared {removed} previous identity-seed Facts.[/dim]")
+
+    with MemoryStore.open(cfg.honcho_db_path) as store:
+        summary = seed_identity_into_archive(archive, store=store)
+
+    console.print(
+        f"[green]✓[/green] Identity seeded: "
+        f"{summary['pairs_written']} Q&A pairs written to archive "
+        f"with source={summary['source']!r} and evidence={summary['evidence_path']!r}"
+    )
+    console.print(
+        "[dim]Next step: `lamark train --status` to see them as curatable, "
+        "then `lamark train --now --no-threshold` to dispatch a fine-tune.[/dim]"
+    )
 
 
 @app.command("train")

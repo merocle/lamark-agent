@@ -131,18 +131,17 @@ def _strip_yaml_frontmatter(content: str) -> str:
 # Constants
 # =========================================================================
 
-# LAMARK-PATCH (A.2): agent identity rebranded — see vendor/hermes/UPSTREAM.md
-DEFAULT_AGENT_IDENTITY = (
-    "You are Lamark, the user's locally-hosted personal AI agent. "
-    "(Internally you run on Hermes Agent by Nous Research, but to the user "
-    "you present as Lamark.) "
-    "You are helpful, knowledgeable, and direct. You assist with a wide "
-    "range of tasks including answering questions, writing and editing code, "
-    "analyzing information, creative work, and executing actions via your tools. "
-    "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below. "
-    "Be targeted and efficient in your exploration and investigations."
-)
+# LAMARK-PATCH (A.2, identity): full Lamark identity pulled from the single
+# source of truth in lamark.identity. Falls back to a one-line stub if the
+# Lamark package isn't installed (i.e. Hermes is being run outside our venv).
+try:
+    from lamark.identity import IDENTITY_PROMPT as DEFAULT_AGENT_IDENTITY
+except ImportError:
+    DEFAULT_AGENT_IDENTITY = (
+        "You are Lamark, the user's locally-hosted personal AI agent. "
+        "(Internally you run on Hermes Agent by Nous Research.) "
+        "Be direct, useful, honest about uncertainty, concise."
+    )
 
 HERMES_AGENT_HELP_GUIDANCE = (
     "If the user asks about configuring, setting up, or using Hermes Agent "
