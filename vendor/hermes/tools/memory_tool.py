@@ -627,7 +627,45 @@ def memory_tool(
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
 
+    # LAMARK-PATCH (A.4): mirror successful add/replace into the Lamark
+    # training-data archive so Phase 2 LoRA training can curate from it.
+    # Removals are not archived — they reduce signal, not increase it.
+    if result.get("success") and action in ("add", "replace") and content:
+        _mirror_to_lamark_archive(action=action, target=target, content=content)
+
     return json.dumps(result, ensure_ascii=False)
+
+
+def _mirror_to_lamark_archive(*, action: str, target: str, content: str) -> None:
+    """LAMARK-PATCH (A.4): append a ChatML record to the Lamark archive.
+
+    Source = agent_self_edit because the agent (not the user directly) chose
+    to write this. Phase-2 curation may down-weight or exclude self-edits
+    relative to PROVENANCE_USER_EXPLICIT.
+
+    Failures are swallowed — archive mirroring must never break a memory write.
+    """
+    try:
+        from lamark.archive import Archive
+        from lamark.memory import PROVENANCE_AGENT_SELF_EDIT
+    except ImportError:
+        return  # Lamark not on path, skip mirroring
+    try:
+        archive_root = os.environ.get("LAMARK_HOME")
+        if archive_root:
+            archive_path = os.path.join(archive_root, "archive")
+        else:
+            archive_path = os.path.join(os.path.expanduser("~"), ".lamark", "archive")
+        archive = Archive.open(archive_path)
+        archive.write_pair(
+            messages=[{"role": "user", "content": content}],
+            source=PROVENANCE_AGENT_SELF_EDIT,
+            confidence=0.7,  # agent-decided, lower than user-explicit (0.95) or imports (0.85)
+            evidence_path=f"hermes_memory_tool:{target}:{action}",
+        )
+    except Exception:
+        # Archive failures are tolerable; the memory write itself already succeeded.
+        return
 
 
 def check_memory_requirements() -> bool:
