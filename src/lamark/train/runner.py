@@ -134,9 +134,12 @@ def dispatch_training(
         container_out = str(lamark_home / "adapters").replace(
             str(lamark_home), container_lamark_home
         )
-        # Reassemble args with container-side paths
+        # Reassemble args with container-side paths.
+        # Invoke as standalone script (not `python -m`) to avoid pulling
+        # lamark.train/__init__.py → curation → archive → memory chain,
+        # which would need sqlalchemy in the container (it's not there).
         container_args = [
-            "python", "-m", "lamark.train.dispatcher_spark",
+            "python", "/workspace/lamark-agent/src/lamark/train/dispatcher_spark.py",
             "--pairs-jsonl", container_pairs,
             "--base-model", container_model_path,
             "--adapter-name", adapter_name,
