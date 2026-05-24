@@ -130,11 +130,68 @@ def main() -> int:
         print(json.dumps(asdict(report), indent=2))
         return 5
 
+    # Manual state-dict merge — bypasses peft.merge_and_unload() which is
+    # broken between peft 0.19.1 and transformers 5.9 (WeightConverter
+    # signature drift). We compute `delta = lora_B @ lora_A * scaling` per
+    # LoRA pair and fold it into the base weight directly.
     try:
-        merged = PeftModel.from_pretrained(base_model, str(adapter_path))
-        report.notes.append("adapter loaded onto base")
-        merged = merged.merge_and_unload()
-        report.notes.append("merge_and_unload() complete — LoRA folded into base weights")
+        import json as _json
+        from safetensors.torch import load_file
+
+        adapter_cfg = _json.loads((adapter_path / "adapter_config.json").read_text())
+        scaling = adapter_cfg.get("lora_alpha", 32) / adapter_cfg.get("r", 16)
+        adapter_state = load_file(str(adapter_path / "adapter_model.safetensors"))
+        report.notes.append(
+            f"adapter loaded: {len(adapter_state)} tensors, "
+            f"alpha={adapter_cfg.get('lora_alpha')}, r={adapter_cfg.get('r')}, "
+            f"scaling={scaling}"
+        )
+
+        # Group lora_A/lora_B pairs. PEFT key format:
+        # base_model.model.<path>.<proj>.lora_A.default.weight
+        # base_model.model.<path>.<proj>.lora_B.default.weight
+        pairs: dict[str, dict[str, torch.Tensor]] = {}
+        for k, v in adapter_state.items():
+            # Strip base_model.model. prefix and the .default.weight suffix
+            stripped = k
+            for prefix in ("base_model.model.", "base_model."):
+                if stripped.startswith(prefix):
+                    stripped = stripped[len(prefix):]
+                    break
+            if ".lora_A." in stripped:
+                base_key, _, _ = stripped.partition(".lora_A.")
+                pairs.setdefault(base_key, {})["A"] = v
+            elif ".lora_B." in stripped:
+                base_key, _, _ = stripped.partition(".lora_B.")
+                pairs.setdefault(base_key, {})["B"] = v
+
+        report.notes.append(f"identified {len(pairs)} LoRA pairs")
+
+        # Apply delta = lora_B @ lora_A * scaling  to each target weight.
+        # The base weight name is `<base_key>.weight` in the base model.
+        base_state = base_model.state_dict()
+        n_merged = 0
+        for base_key, ab in pairs.items():
+            weight_name = f"{base_key}.weight"
+            if weight_name not in base_state:
+                # Some PEFT key formats stash "model." or "transformer." prefix
+                alt = "model." + weight_name
+                if alt in base_state:
+                    weight_name = alt
+                else:
+                    report.notes.append(f"  skip: base weight {weight_name!r} not in state_dict")
+                    continue
+            if "A" not in ab or "B" not in ab:
+                report.notes.append(f"  skip: incomplete pair for {base_key}")
+                continue
+            base_w = base_state[weight_name]
+            lora_a = ab["A"].to(base_w.device, dtype=base_w.dtype)
+            lora_b = ab["B"].to(base_w.device, dtype=base_w.dtype)
+            delta = (lora_b @ lora_a) * scaling
+            base_w.add_(delta)
+            n_merged += 1
+        report.notes.append(f"manually merged {n_merged} weights")
+        merged = base_model
     except Exception as e:
         report.error = f"merge failed: {type(e).__name__}: {e}"
         print(json.dumps(asdict(report), indent=2))
