@@ -274,6 +274,128 @@ def bootstrap(
             )
 
 
+@app.command("train")
+def train(
+    now: bool = typer.Option(False, "--now", help="Run the trainer immediately (instead of dry-run)."),
+    plan_only: bool = typer.Option(
+        False,
+        "--plan",
+        help="Print the curation plan without running anything.",
+    ),
+    status: bool = typer.Option(
+        False,
+        "--status",
+        help="Print archive size + readiness summary, then exit.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Walk pipeline but do not invoke trainer (works with --now).",
+    ),
+    no_threshold: bool = typer.Option(
+        False,
+        "--no-threshold",
+        help="Bypass the minimum-records guard (default refuses < 50 records).",
+    ),
+    min_confidence: float = typer.Option(
+        0.7,
+        "--min-confidence",
+        help="Exclude pairs with confidence below this.",
+    ),
+    include_agent_edits: bool = typer.Option(
+        False,
+        "--include-agent-edits",
+        help="Include source=agent_self_edit pairs (default: exclude — risk of feedback loops).",
+    ),
+    target_model: str = typer.Option(
+        "Qwen/Qwen3.6-27B",
+        "--target-model",
+        help="Base model for the LoRA adapter (default: dense 27B for style).",
+    ),
+) -> None:
+    """Force a LoRA fine-tune run on the accumulated archive.
+
+    Plan A.5 ships the CLI surface + curation pipeline. The actual trainer
+    (Unsloth + DoRA on Spark) is stubbed — Module 14 (Phase 2) wires it.
+    """
+    from lamark.archive import Archive
+    from lamark.train import build_plan, count_archive, dispatch_training
+
+    cfg = load_config()
+    archive = Archive.open(cfg.home / "archive")
+    archive_total = count_archive(archive)
+
+    # --status: report and exit
+    if status:
+        if archive_total == 0:
+            console.print("[yellow]Archive empty — Lamark not ready to train.[/yellow]")
+            console.print(f"  archive path: {cfg.home / 'archive'}")
+            return
+        console.print(f"[green]Archive:[/green] {archive_total} records total")
+        plan = build_plan(archive, min_confidence=min_confidence)
+        console.print(f"  curatable (current filters): {len(plan)}")
+        if len(plan) < 50:
+            console.print(
+                f"  [yellow]Below default threshold of 50 records — `lamark train --now` will refuse "
+                "without `--no-threshold`.[/yellow]"
+            )
+        return
+
+    # Build the plan
+    allowed_sources = ("user_explicit", "bootstrap", "imported")
+    if include_agent_edits:
+        allowed_sources = (*allowed_sources, "agent_self_edit")
+    plan = build_plan(archive, min_confidence=min_confidence, allowed_sources=allowed_sources)
+
+    # --plan: print and exit, never invoke trainer
+    if plan_only:
+        console.print(f"[green]Curation plan[/green] (filters: {plan.filters_applied}):")
+        console.print(f"  archive total:   {plan.archive_total}")
+        console.print(f"  candidate pairs: {len(plan)}")
+        console.print(f"  target model:    {target_model}")
+        if not plan.records:
+            console.print("  [dim]no records pass filters — would refuse to train[/dim]")
+        return
+
+    if not now:
+        console.print(
+            "[yellow]Use `lamark train --now` to actually run, "
+            "`--plan` to inspect candidates, or `--status` for a summary.[/yellow]"
+        )
+        raise typer.Exit(2)
+
+    # --now path
+    if len(plan) < 50 and not no_threshold:
+        console.print(
+            f"[red]✗ Refusing: only {len(plan)} curatable records (need ≥ 50). "
+            "Pass `--no-threshold` to override (training on too little data overfits).[/red]"
+        )
+        raise typer.Exit(2)
+
+    console.print(
+        f"[green]→ Dispatching trainer[/green] ({len(plan)} records, {target_model}, "
+        f"dry_run={dry_run})..."
+    )
+    if dry_run:
+        report = {
+            "ok": True,
+            "n_pairs": len(plan),
+            "target_model": target_model,
+            "dry_run": True,
+            "notes": ["dry-run: dispatcher NOT called"],
+        }
+    else:
+        report = dispatch_training(
+            plan.records, dry_run=False, target_model=target_model
+        )
+
+    icon = "✓" if report.get("ok") else "✗"
+    color = "green" if report.get("ok") else "red"
+    console.print(f"[{color}]{icon}[/{color}] trainer report: n_pairs={report.get('n_pairs')}")
+    for note in report.get("notes", []):
+        console.print(f"  [dim]{note}[/dim]")
+
+
 def main() -> None:
     """Entry point referenced from pyproject.toml [project.scripts]."""
     app()
