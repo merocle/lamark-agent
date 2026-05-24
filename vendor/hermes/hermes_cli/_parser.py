@@ -87,8 +87,8 @@ def build_top_level_parser():
     other subparsers via ``subparsers.add_parser(...)``.
     """
     parser = argparse.ArgumentParser(
-        prog="hermes",
-        description="Hermes Agent - AI assistant with tool-calling capabilities",
+        prog="lamark-agent",  # LAMARK-PATCH (A.2): prog name was "hermes"
+        description="Lamark - locally-hosted personal AI agent (built on Hermes Agent by Nous Research, MIT)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_EPILOGUE,
     )

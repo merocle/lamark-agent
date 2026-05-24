@@ -911,10 +911,11 @@ def run_doctor(args):
         check_warn(f"{_DHH}/SOUL.md not found", "(create it to give Hermes a custom personality)")
         if should_fix:
             soul_path.parent.mkdir(parents=True, exist_ok=True)
+            # LAMARK-PATCH (A.2): doctor-generated SOUL fallback now uses Lamark brand.
             soul_path.write_text(
-                "# Hermes Agent Persona\n\n"
-                "<!-- Edit this file to customize how Hermes communicates. -->\n\n"
-                "You are Hermes, a helpful AI assistant.\n",
+                "# Lamark Persona\n\n"
+                "<!-- Edit this file to customize how Lamark communicates. -->\n\n"
+                "You are Lamark, the user's locally-hosted personal AI agent.\n",
                 encoding="utf-8",
             )
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
