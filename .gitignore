@@ -101,3 +101,10 @@ dmypy.json
 # Smoke test results (kept out of git — Spark-specific)
 smoke_test_results/
 *.smoke.json
+
+# Hermes vendor — code committed, runtime artefacts ignored
+vendor/hermes/**/__pycache__/
+vendor/hermes/**/*.pyc
+vendor/hermes/**/node_modules/
+vendor/hermes/**/.venv/
+vendor/hermes/.lamark/
