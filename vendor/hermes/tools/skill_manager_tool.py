@@ -727,6 +727,30 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    # LAMARK-PATCH (A.3): redaction gate. Any write that would persist a
+    # verified secret (AWS key, GitHub PAT, OpenAI sk-, JWT, etc.) into a
+    # skill file is refused before reaching the action handlers. Hermes's
+    # tools/skill_manager has no equivalent — its own redact.py is a log
+    # masker, not a write-time abort.
+    try:
+        from lamark.redaction import RedactionPipeline, SecretFound
+        _lamark_redaction = RedactionPipeline()
+    except ImportError:
+        _lamark_redaction = None  # outside Lamark venv; skip gate
+    if _lamark_redaction is not None:
+        for label, payload in (("content", content), ("file_content", file_content)):
+            if not payload:
+                continue
+            try:
+                _lamark_redaction.process(payload)
+            except SecretFound as e:
+                return tool_error(
+                    f"Blocked by Lamark redaction: {e.category} secret detected in "
+                    f"`{label}` (pattern={e.source}). Skill writes that would persist "
+                    "verified secrets are refused. Sanitise the value or use a placeholder.",
+                    success=False,
+                )
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)

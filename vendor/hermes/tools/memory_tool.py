@@ -91,7 +91,15 @@ _INVISIBLE_CHARS = {
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
-    """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
+    """Scan memory content for injection/exfil patterns. Returns error string if blocked.
+
+    LAMARK-PATCH (A.3): also chain lamark.redaction.RedactionPipeline. Hermes's
+    built-in scan catches prompt-injection and exfiltration patterns; Lamark's
+    pipeline additionally HALTS on verified secrets (AWS keys, GitHub PATs,
+    OpenAI sk-, JWTs, etc.) before they land in MEMORY.md/USER.md — which
+    matters because anything in those files gets injected into every system
+    prompt and may end up in Phase-2 training data.
+    """
     # Check invisible unicode
     for char in _INVISIBLE_CHARS:
         if char in content:
@@ -101,6 +109,21 @@ def _scan_memory_content(content: str) -> Optional[str]:
     for pattern, pid in _MEMORY_THREAT_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
+
+    # LAMARK-PATCH (A.3): chain Lamark redaction pipeline.
+    try:
+        from lamark.redaction import RedactionPipeline, SecretFound
+    except ImportError:
+        # Running outside the Lamark venv — fall through to legacy behaviour.
+        return None
+    try:
+        RedactionPipeline().process(content)
+    except SecretFound as e:
+        return (
+            f"Blocked by Lamark redaction: {e.category} secret detected "
+            f"(pattern={e.source}). Memory writes that would persist verified "
+            "secrets are refused. Sanitise the value or use a placeholder."
+        )
 
     return None
 
