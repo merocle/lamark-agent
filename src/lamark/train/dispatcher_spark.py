@@ -244,30 +244,47 @@ def main() -> int:
         print(json.dumps(asdict(report), indent=2))
         return 0
 
-    # 6. Train
+    # 6. Train — SFTConfig signature varies across TRL versions; only pass
+    # kwargs that the installed TRL accepts.
     out = Path(args.output_dir) / args.adapter_name
     out.mkdir(parents=True, exist_ok=True)
+    import inspect
+
+    sft_kwargs: dict[str, Any] = {
+        "output_dir": str(out),
+        "num_train_epochs": args.num_epochs,
+        "per_device_train_batch_size": args.per_device_batch_size,
+        "gradient_accumulation_steps": args.grad_accum_steps,
+        "learning_rate": args.learning_rate,
+        "logging_steps": 2,
+        "save_strategy": "no",
+        "bf16": True,
+        "optim": "adamw_torch",
+        "report_to": [],
+    }
+    # Filter to params actually accepted by this TRL version
+    sig = inspect.signature(SFTConfig.__init__)
+    accepted = set(sig.parameters.keys())
+    if "max_seq_length" in accepted:
+        sft_kwargs["max_seq_length"] = args.max_seq_length
+    if "max_length" in accepted:
+        sft_kwargs["max_length"] = args.max_seq_length
+    if "packing" in accepted:
+        sft_kwargs["packing"] = False
     try:
-        sft_cfg = SFTConfig(
-            output_dir=str(out),
-            num_train_epochs=args.num_epochs,
-            per_device_train_batch_size=args.per_device_batch_size,
-            gradient_accumulation_steps=args.grad_accum_steps,
-            learning_rate=args.learning_rate,
-            logging_steps=2,
-            save_strategy="no",
-            bf16=True,
-            optim="adamw_torch",
-            report_to=[],
-            max_seq_length=args.max_seq_length,
-            packing=False,
-        )
-        trainer = SFTTrainer(
-            model=model,
-            args=sft_cfg,
-            train_dataset=ds,
-            tokenizer=tokenizer,
-        )
+        sft_cfg = SFTConfig(**sft_kwargs)
+        # SFTTrainer signature also varies — tokenizer kwarg vs processing_class
+        trainer_sig = inspect.signature(SFTTrainer.__init__)
+        trainer_kwargs: dict[str, Any] = {
+            "model": model,
+            "args": sft_cfg,
+            "train_dataset": ds,
+        }
+        if "tokenizer" in trainer_sig.parameters:
+            trainer_kwargs["tokenizer"] = tokenizer
+        elif "processing_class" in trainer_sig.parameters:
+            trainer_kwargs["processing_class"] = tokenizer
+        trainer = SFTTrainer(**trainer_kwargs)
     except Exception as e:
         report.error = f"trainer init failed: {type(e).__name__}: {e}"
         print(json.dumps(asdict(report), indent=2))
