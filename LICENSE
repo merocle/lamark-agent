@@ -3,12 +3,19 @@ MIT License
 Copyright (c) 2026 Lamark contributors
 Copyright (c) 2025 Nous Research
 
-Lamark is a fork of Hermes Agent (https://github.com/NousResearch/hermes-agent),
-originally created by Nous Research under the MIT License. The original copyright
-notice from Hermes Agent is retained above as required by the MIT License.
+Lamark is a fork and vendor copy of Hermes Agent
+(https://github.com/NousResearch/hermes-agent) at the pinned upstream SHA
+recorded in vendor/hermes/UPSTREAM.md, originally created by Nous Research
+under the MIT License. The original copyright notice from Hermes Agent is
+retained above as required by the MIT License, and the unmodified copy of
+Hermes Agent's LICENSE is preserved verbatim at vendor/hermes/LICENSE.
 
-Substantial portions of this software may derive from Hermes Agent. New code
-contributed to Lamark is also licensed under MIT.
+Substantial portions of this software derive from Hermes Agent. New code
+contributed to Lamark — including the src/lamark/ Python package, the
+HYBRID-B redaction patches under vendor/hermes/ marked LAMARK-PATCH, and
+the training subsystem under src/lamark/train/ — is also licensed under
+MIT. Modifications to vendored Hermes files are tracked in
+vendor/hermes/MODIFICATIONS.md.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

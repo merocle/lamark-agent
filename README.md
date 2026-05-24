@@ -2,13 +2,13 @@
 
 > The agent that grows with you — locally.
 
-Lamark is a personal AI agent that runs on a single NVIDIA DGX Spark and learns from accumulated dialogue over time. It is a fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, under the MIT License.
+Lamark is a personal AI agent that runs on a single NVIDIA DGX Spark and learns from accumulated dialogue over time. It is built as a fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research (vendored at `vendor/hermes/`, MIT) with Lamark-specific additions: a redaction safety gate, a training-data archive, dual-write wiring, and a force-fine-tune CLI.
 
 The name is a nod to Jean-Baptiste **Lamarck**: traits acquired during one "day of use" are passed to the next generation of weights through nightly LoRA training. Not Darwinian selection — Lamarckian inheritance.
 
 ## Status
 
-**Pre-alpha.** Phase 0 (smoke-test + provisioning). Architecture is locked per `../feasibility-report-v3.md`. Phase 1 (fork + memory + bootstrap) starts after Phase 0 smoke-test passes on real Spark hardware.
+**Pre-alpha, Plan A complete.** End-to-end `lamark chat` works against a live Qwen3.6-35B-A3B on Spark, returning memory-injected responses. `lamark train` is wired but the actual Unsloth dispatch is Module 14 (Phase 2 in v4 plan). 119 tests green.
 
 ## Quick start
 
@@ -17,63 +17,92 @@ On a fresh DGX Spark (DGX OS Ubuntu 24.04, CUDA 13.x):
 ```bash
 git clone <this-repo> ~/lamark-agent
 cd ~/lamark-agent
-./scripts/setup_spark.sh              # installs vLLM, llama.cpp, Unsloth, models
+./scripts/setup_spark.sh              # installs torch via NGC container, llama.cpp, models
 source ~/.lamark/env
 python scripts/smoke_test.py \
     --output smoke_test_results/first.json
 ```
 
-**Hard gate:** the smoke test must report `PASS` (≥ 25 tok/s median single-stream decode on `Qwen/Qwen3.6-35B-A3B` FP8 via vLLM) before any Phase 1 work begins. If it `FAIL`s (< 22 tok/s), see `docs/troubleshooting.md`.
+After smoke test passes (≥ 22 tok/s median single-stream decode on Qwen3.6-35B-A3B FP8 via vLLM):
 
-## Architecture (one screen)
+```bash
+# Day-0: seed identity + import history
+lamark bootstrap --name "Anna" --locale "ru-RU" \
+    --role "ML engineer at X, lives in Berlin" \
+    --chatgpt ~/Downloads/chatgpt-conversations.json \
+    --obsidian ~/Documents/Obsidian
+
+# Chat (single-shot, MVP — multi-turn via Hermes loop comes via `lamark` binary)
+lamark chat "что у нас на сегодня?"
+
+# Inspect the training-data archive
+lamark train --status
+
+# Force a fine-tune (refused if archive < 50 records unless --no-threshold)
+lamark train --now
+```
+
+## Architecture
 
 ```
-Hermes Agent fork (lamark CLI / 20+ channel gateway)
-├── Memory: Honcho user model + cross-session recall + skill library
-│   └── Vector store: LanceDB (embedded)  | Embeddings: bge-m3
-├── Inference router (small Qwen 0.6B classifier)
-│   ├── Qwen3.6-35B-A3B FP8 via vLLM   ←  ~28-30 tok/s, default
-│   └── Qwen3.6-27B Q4   via llama.cpp ←  ~12-15 tok/s, style-critical (Phase 2)
-└── Fine-tune loop (Phase 2, weeks 6+):
-    ├── Style LoRA on dense 27B (Panza pattern, Unsloth)
-    └── Procedural ESFT on MoE (two-adapter, O-LoRA orthogonality)
+                            ┌──────────────┐
+                            │     User     │
+                            └──────┬───────┘
+                                   │
+                ┌──────────────────▼──────────────────┐
+                │  Lamark (built on vendored Hermes)  │
+                │  • redaction gate (HALT-on-secret)  │
+                │  • single-shot `lamark chat`        │
+                │  • multi-turn `hermes`-style CLI    │
+                │  • cron, skills, channels, sandbox  │
+                └──────┬──────────────────────────┬───┘
+                       │                          │
+                ┌──────▼──────────┐    ┌──────────▼──────────┐
+                │  MemoryStore    │    │  Training-data      │
+                │  (Fact table)   │◄───┤  archive (JSONL)    │
+                │                 │    │  + sensitivity tags │
+                └─────────────────┘    └──────────┬──────────┘
+                                                  │
+                                       ┌──────────▼──────────┐
+                                       │  `lamark train`     │
+                                       │  curation pipeline  │
+                                       │  → Unsloth on Spark │
+                                       │  → LoRA adapter     │
+                                       │  → eval-gate promo  │
+                                       └─────────────────────┘
 ```
 
-For the full feasibility analysis and design rationale, see `../feasibility-report-v3.md`.
-
-## Why this stack
-
-- **MoE primary** for chat speed (5× faster than dense on bandwidth-bound DGX Spark).
-- **Dense secondary** for style LoRA (Panza pattern proven on dense; MoE expert routing fights style localization).
-- **Hermes native memory** (no Letta/Mem0 on top — single source of truth).
-- **LanceDB embedded** (no Qdrant server overhead for single-user).
-- **Day-0 bootstrap wizard** (ChatGPT/Notes/Obsidian import) — closes the cold-start gap that other memory-layer assistants suffer through weeks 1-3.
+For the full design rationale, see `../feasibility-report-v4.md`. The
+Hermes-integration trade-offs are documented in
+`docs/hermes-vs-lamark-analysis.md`.
 
 ## Repository layout
 
 ```
 lamark-agent/
-├── src/lamark/              Python package (Phase 1+)
-│   ├── agent/              Hermes-derived agent loop
-│   ├── memory/             Honcho user model + LanceDB integration
+├── src/lamark/             Python package
+│   ├── memory/             Fact archive (SQLAlchemy)
+│   ├── archive/            Training-data archive (JSONL)
+│   ├── train/              Curation + trainer dispatch (Plan A.5)
 │   ├── inference/          vLLM + llama.cpp routing
-│   ├── bootstrap/          Day-0 onboarding wizard
-│   ├── fine_tune/          Phase 2: Unsloth + ESFT + style LoRA
-│   ├── redaction/          PII / secrets pipeline for training data
-│   └── eval/               Regression gates for LoRA promotion
-├── scripts/                Operational scripts
-│   ├── smoke_test.py       Phase 0 go/no-go gate
-│   └── setup_spark.sh      One-shot Spark provisioning
-├── tests/                  pytest test suite
-├── configs/                YAML configs (models, training, memory)
-├── adapters/               Trained LoRA adapters (gitignored)
-└── docs/                   Design notes, troubleshooting
+│   ├── bootstrap/          Day-0 wizard + ChatGPT/Obsidian importers
+│   └── redaction/          PII + secrets pipeline (HALT-on-secret)
+├── vendor/hermes/          Vendored Hermes Agent (Nous Research, MIT)
+│   ├── LICENSE             Original — preserved verbatim
+│   ├── UPSTREAM.md         Pinned SHA + dual-attribution
+│   └── MODIFICATIONS.md    Lamark patch stack (Plans A.2 + A.3 + A.4)
+├── scripts/                smoke_test.py, setup_spark.sh, vllm_server.sh
+├── docker/                 Dockerfile.vllm (NGC pytorch + vLLM)
+├── tests/                  pytest suite (119 tests green)
+└── docs/                   Design notes, troubleshooting, smoke-test reports
 ```
 
 ## Attribution
 
-Lamark is a fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, under the MIT License. See `LICENSE` for the full notice. Where Hermes Agent code is preserved we leave Nous Research's copyright in place; new code is © Lamark contributors.
+Lamark is built on a vendored copy of [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, distributed under the MIT License. The upstream code lives under `vendor/hermes/` with its original LICENSE preserved verbatim and the pinned SHA recorded in `vendor/hermes/UPSTREAM.md`. Lamark modifications to vendored Hermes files are marked `LAMARK-PATCH (A.N)` at each touched line and catalogued in `vendor/hermes/MODIFICATIONS.md`.
+
+New Lamark code under `src/lamark/` and the LAMARK-PATCH diff stack are © 2026 Lamark contributors. Both copyright lines must travel together in any redistribution per MIT.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT — see [LICENSE](./LICENSE) and [vendor/hermes/LICENSE](./vendor/hermes/LICENSE).
