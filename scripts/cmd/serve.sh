@@ -54,6 +54,13 @@ cmd_start() {
         return 0
     fi
 
+    # Cleanup any exited container with the same name. `docker run` refuses
+    # to reuse the name otherwise — found by the first non-author install
+    # where the previous custom-built image left a stopped container behind.
+    if docker ps -a --filter "name=^${CONTAINER_NAME}$" --format '{{.ID}}' | grep -q .; then
+        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+
     # Resolve which model + LoRA adapters to serve.
     local model_name
     model_name="$(PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" -c "
