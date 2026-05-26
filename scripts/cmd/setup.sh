@@ -91,46 +91,83 @@ SETUP_FILE="$LAMARK_HOME/setup.json"
 
 write_local_config() {
     local model="$1"
+    # See note in write_endpoint_config() — same reasoning: `custom`
+    # provider over `lm-studio` so the `/model` picker lists our local
+    # vLLM, and the daemon launchers (launchd / systemd / gateway
+    # --replace) don't have to inject LM_BASE_URL into the child env.
     cat > "$CONFIG_FILE" <<YAML
 # Lamark — local inference via vLLM on port 8000.
 model:
   default: ${model}
-  provider: lm-studio
+  provider: custom
   base_url: http://127.0.0.1:8000/v1
+  context_length: 131072
+
+custom_providers:
+  - name: lamark-local
+    base_url: http://127.0.0.1:8000/v1
+    api_key: not-needed
+    models:
+      - name: ${model}
+        context_length: 131072
+        transport: openai_chat
 
 model_aliases:
   ${model}:
     model: ${model}
-    provider: lm-studio
+    provider: custom
     base_url: http://127.0.0.1:8000/v1
 YAML
     cat > "$ENV_FILE" <<EOF
 export LM_API_KEY=not-needed
 export LM_BASE_URL=http://127.0.0.1:8000/v1
-export HERMES_INFERENCE_PROVIDER=lm-studio
+export HERMES_INFERENCE_PROVIDER=custom
 export HERMES_INFERENCE_MODEL=${model}
 EOF
 }
 
 write_endpoint_config() {
     local url="$1"; local key="$2"; local model_name="$3"
+    # Use the `custom` provider, not `lm-studio`. `lm-studio` has a hardcoded
+    # fallback to http://127.0.0.1:1234/v1 and reads LM_BASE_URL from env —
+    # which is fragile across daemon launchers (launchd plists, systemd
+    # units, gateway --replace re-execs all dropped the env). `custom`
+    # reads base_url directly from config.yaml on every call, no env-var
+    # dance, and registers in the `/model` picker as a Custom Models
+    # entry. Works with any OpenAI-compatible endpoint (vLLM / ollama /
+    # LM Studio app / TGI / anything).
     cat > "$CONFIG_FILE" <<YAML
-# Lamark — using user-supplied OpenAI-compatible endpoint.
+# Lamark — connected to an existing OpenAI-compatible endpoint.
 model:
   default: ${model_name}
-  provider: lm-studio
+  provider: custom
   base_url: ${url}
+  context_length: 131072
 
+# Registers the endpoint as a first-class Custom Models entry so it
+# appears in \`/model\` pickers (CLI + messaging gateways).
+custom_providers:
+  - name: lamark-endpoint
+    base_url: ${url}
+    api_key: ${key:-not-needed}
+    models:
+      - name: ${model_name}
+        context_length: 131072
+        transport: openai_chat
+
+# Short aliases for \`lamark chat -m <name>\` and \`switch-base\`.
 model_aliases:
   ${model_name}:
     model: ${model_name}
-    provider: lm-studio
+    provider: custom
     base_url: ${url}
 YAML
+    # Env file kept for back-compat (chat.sh sources it) — `custom` provider
+    # doesn't strictly need LM_BASE_URL, but other Hermes paths may.
     cat > "$ENV_FILE" <<EOF
 export LM_API_KEY=${key:-not-needed}
 export LM_BASE_URL=${url}
-export HERMES_INFERENCE_PROVIDER=lm-studio
+export HERMES_INFERENCE_PROVIDER=custom
 export HERMES_INFERENCE_MODEL=${model_name}
 EOF
 }

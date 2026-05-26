@@ -2808,12 +2808,18 @@ def generate_launchd_plist() -> str:
     )
 
     # LAMARK-PATCH (A.7): parse $HERMES_HOME/env for `export KEY=VALUE` lines
-    # and include them in the launchd EnvironmentVariables block. Without
-    # this, the daemon launched by launchd has no LM_BASE_URL / LM_API_KEY /
-    # HERMES_INFERENCE_* and falls back to the lm-studio default
-    # (http://127.0.0.1:1234/v1), failing every API call. Plain
-    # `source ~/.lamark/hermes-home/env` works for interactive shells but
-    # launchd doesn't read it — env must be inlined into the plist.
+    # and include them in the launchd EnvironmentVariables block.
+    #
+    # Originally a workaround for the lm-studio provider on macOS — its
+    # base_url depends on LM_BASE_URL env var, which launchd doesn't
+    # carry across `lamark gateway install`. The proper fix (see
+    # scripts/cmd/setup.sh's write_*_config) is to use the `custom`
+    # provider, which reads base_url directly from config.yaml and
+    # needs no env injection.
+    #
+    # Keeping this patch as a defensive layer for installs that still
+    # use lm-studio (or that set HERMES_INFERENCE_* env vars by hand) —
+    # but the canonical setup path no longer requires it.
     extra_env_xml = ""
     env_file = get_hermes_home() / "env"
     if env_file.is_file():
