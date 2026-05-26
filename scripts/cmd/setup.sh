@@ -28,11 +28,30 @@ if [ ! -x "$VENV_PY" ]; then
 fi
 
 # Run hardware detection up front — used by branches 1 and 3.
-HW_JSON=$(PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" -m lamark.hardware 2>/dev/null || echo "{}")
-TIER=$(echo "$HW_JSON" | "$VENV_PY" -c "import json,sys; d=json.load(sys.stdin); print(d.get('tier','NONE'))")
-RECOMMENDED_MODEL=$(echo "$HW_JSON" | "$VENV_PY" -c "import json,sys; d=json.load(sys.stdin); print(d.get('recommended_model') or '')")
-GPU_NAME=$(echo "$HW_JSON" | "$VENV_PY" -c "import json,sys; d=json.load(sys.stdin); print(d.get('hardware',{}).get('gpu_name') or 'CPU only')")
-EFF_MEM=$(echo "$HW_JSON" | "$VENV_PY" -c "import json,sys; d=json.load(sys.stdin); print(int(d.get('hardware',{}).get('effective_memory_gb') or 0))")
+# `hardware.py` now always exits 0 and emits a single JSON blob on stdout.
+# We still defend against parse failures (host might lack pyyaml, etc).
+HW_JSON=$(PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" -m lamark.hardware 2>/dev/null)
+if ! echo "$HW_JSON" | "$VENV_PY" -c "import json,sys; json.load(sys.stdin)" 2>/dev/null; then
+    HW_JSON='{"hardware":{"gpu_name":null,"effective_memory_gb":0},"tier":"NONE","recommended_model":null}'
+fi
+
+_pick() {
+    # _pick <python expression that returns a string for `d` = parsed JSON>
+    echo "$HW_JSON" | "$VENV_PY" -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print($1)
+except Exception:
+    print('')
+" 2>/dev/null
+}
+TIER=$(_pick "d.get('tier','NONE') or 'NONE'")
+RECOMMENDED_MODEL=$(_pick "d.get('recommended_model') or ''")
+GPU_NAME=$(_pick "(d.get('hardware') or {}).get('gpu_name') or 'CPU only'")
+EFF_MEM=$(_pick "int((d.get('hardware') or {}).get('effective_memory_gb') or 0)")
+[ -z "$TIER" ] && TIER="NONE"
+[ -z "$EFF_MEM" ] && EFF_MEM=0
 
 cat <<EOF
 ==================================================
@@ -235,8 +254,18 @@ esac
 # ============================================================
 # Training trigger: how often + threshold
 # ============================================================
-# Always ask, regardless of branch — even cloud-first users may eventually
-# want their local model to absorb their context once download finishes.
+# Only meaningful when there's local GPU hardware to run the retrain on.
+# For the Existing-endpoint branch (user points at remote vLLM), and on
+# CPU-only hosts (Macs, headless boxes), the retrain has to happen
+# wherever the model actually lives — not on this client.
+if [ "$SETUP_BRANCH" = "existing-endpoint" ] || [ "$TIER" = "NONE" ]; then
+    note "Skipping training-trigger setup: no local GPU on this host."
+    note "Retraining happens on the machine that serves the model."
+    note "(Set training.frequency + min_pairs there via \`lamark config set\`.)"
+    SKIP_TRAINING_TRIGGER=1
+fi
+
+if [ "${SKIP_TRAINING_TRIGGER:-0}" != "1" ]; then
 echo ""
 echo "============================================"
 echo "  How often should Lamark retrain on your data?"
@@ -302,6 +331,7 @@ if [ "$TRAIN_FREQ" != "manual" ]; then
         warn "or copy scripts/systemd/lamark-nightly.* to ~/.config/systemd/user/ yourself."
     fi
 fi
+fi   # end SKIP_TRAINING_TRIGGER
 
 # Record the branch choice for `lamark status` and future migrations.
 cat > "$SETUP_FILE" <<EOF

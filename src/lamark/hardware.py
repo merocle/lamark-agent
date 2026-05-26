@@ -21,7 +21,7 @@ import platform
 import re
 import shutil
 import subprocess
-import sys
+import sys  # noqa: F401  (referenced by main entry point)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -90,7 +90,8 @@ def _nvidia_smi() -> tuple[Optional[str], int, float, Optional[str]]:
 
 
 def _meminfo_ram_gb() -> float:
-    """Read /proc/meminfo and return total system RAM in GB."""
+    """Return total system RAM in GB. Cross-platform (Linux /proc, macOS sysctl)."""
+    # Linux
     try:
         with open("/proc/meminfo", "r") as f:
             for line in f:
@@ -98,6 +99,15 @@ def _meminfo_ram_gb() -> float:
                     kb = int(re.search(r"(\d+)", line).group(1))
                     return kb / 1024.0 / 1024.0
     except (OSError, AttributeError, ValueError):
+        pass
+    # macOS — `sysctl -n hw.memsize` returns total RAM in bytes.
+    try:
+        out = subprocess.check_output(
+            ["sysctl", "-n", "hw.memsize"], text=True, timeout=5,
+        ).strip()
+        return float(out) / 1024.0 / 1024.0 / 1024.0
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError, ValueError):
         pass
     return 0.0
 
@@ -172,7 +182,13 @@ def pick_default_model(tier: str,
 
 
 def main() -> int:
-    """CLI for setup.sh — prints JSON with detected hardware + tier + model."""
+    """CLI for setup.sh — prints JSON with detected hardware + tier + model.
+
+    Always exits 0: the JSON itself carries the tier (or "NONE"). Using exit
+    code 1 for "no tier" used to cause shell command substitution to mix the
+    JSON with a fallback `echo "{}"` via `... || echo`, producing invalid
+    output. Caller should check `.tier` in the JSON, not `$?`.
+    """
     hw = detect()
     tier = detect_tier(hardware=hw)
     model = pick_default_model(tier) if tier != "NONE" else None
@@ -182,7 +198,7 @@ def main() -> int:
         "recommended_model": model,
     }
     print(json.dumps(out, indent=2))
-    return 0 if tier != "NONE" else 1
+    return 0
 
 
 if __name__ == "__main__":
