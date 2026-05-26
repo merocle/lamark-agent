@@ -1,0 +1,166 @@
+# Lamark model registry.
+#
+# Each entry tells the install + training + serving pipeline how to handle
+# a specific base model: which HF id to download, which architecture
+# (MoE vs dense → LoRA target_modules), what hardware tier it fits, what
+# inference quirks the serving stack needs to apply.
+#
+# setup.sh reads this file, calls hardware.detect_tier(), then picks the
+# best `default_for_tier: true` entry for that tier. User can override
+# with `lamark switch-base <name>`.
+
+# Hardware tier definitions (S/M/L/XS — like t-shirt sizes).
+tiers:
+  S:
+    # Tier S — Spark, H100, A100 80GB. ≥80 GB available for model weights
+    # (unified memory on Spark counts as "VRAM" because GPU+CPU share it).
+    name: "Spark / H100 / A100 80GB"
+    min_total_memory_gb: 80
+    serving_quirks: ["flash_attn_purge", "eager_loader_patch", "torch_cuda_arch_list_12_1"]
+  M:
+    # Tier M — 4090 24GB, 5090 32GB, A100 40GB.
+    name: "RTX 4090 / 5090 / A100 40GB"
+    min_total_memory_gb: 22
+    serving_quirks: []
+  L:
+    # Tier L — 3090 24GB, 4080 16GB, A4000 16GB. Smaller LoRA targets.
+    name: "RTX 3090 / 4080 / A4000"
+    min_total_memory_gb: 14
+    serving_quirks: []
+  XS:
+    # Tier XS — 4060 8GB, M-series Macs. Tiny model, CPU fallback OK.
+    name: "RTX 4060 / Mac M-series / CPU"
+    min_total_memory_gb: 6
+    serving_quirks: []
+
+# Model catalog. `default_for_tier` marks which model setup.sh picks for
+# that tier in the absence of explicit user choice.
+models:
+
+  qwen-3.6-35b-a3b-moe:
+    hf_id: "Qwen/Qwen3.6-35B-A3B"
+    arch: "moe"
+    param_count_b: 35.0
+    active_param_count_b: 3.0
+    download_size_gb: 67
+    tier: "S"
+    default_for_tier: true
+    tested: true   # verified on two independent DGX Spark hosts
+    lora:
+      # MoE LoRA targets: attention only. MoE expert MLPs would need ESFT-
+      # style expert-specialized fine-tuning (DeepSeek 2024), which our
+      # pipeline doesn't implement. Attention-only is fine for style/voice;
+      # facts go through L2 retrieval and (eventually) L3 ROME.
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+      rank: 16
+      alpha: 32
+    serving:
+      backend: "vllm"
+      # 65536 (not 32768): Hermes Agent rejects context < 64K. Qwen3.6-MoE
+      # supports up to 262K, but 64K balances Spark unified-memory pressure
+      # against Hermes's minimum.
+      max_model_len: 65536
+      expert_parallel: true
+      tool_call_parser: "qwen3_xml"
+      enable_auto_tool_choice: true
+
+  qwen-3.6-27b-dense:
+    hf_id: "Qwen/Qwen3.6-27B"
+    arch: "dense"
+    param_count_b: 27.0
+    download_size_gb: 55
+    tier: "S"
+    default_for_tier: false
+    tested: false  # not yet verified on real hardware (Phase 2 work)
+    lora:
+      # Dense LoRA can target ALL linear layers — gives ~8x more parameter
+      # paths per training pair (Panza-pattern). This is what we'd use if
+      # the user wanted to experiment with stronger style bake-in.
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj",
+                       "gate_proj", "up_proj", "down_proj"]
+      rank: 16
+      alpha: 32
+    serving:
+      backend: "vllm"
+      max_model_len: 32768
+      tool_call_parser: "qwen3_xml"
+      enable_auto_tool_choice: true
+
+  qwen-3.6-14b-dense:
+    hf_id: "Qwen/Qwen3.6-14B"
+    arch: "dense"
+    param_count_b: 14.0
+    download_size_gb: 28
+    tier: "M"
+    default_for_tier: true
+    tested: false  # not yet verified on real hardware (Phase 2 work)
+    lora:
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj",
+                       "gate_proj", "up_proj", "down_proj"]
+      rank: 16
+      alpha: 32
+    serving:
+      backend: "vllm"
+      max_model_len: 16384
+      tool_call_parser: "qwen3_xml"
+      enable_auto_tool_choice: true
+
+  qwen-3.6-7b-dense:
+    hf_id: "Qwen/Qwen3.6-7B"
+    arch: "dense"
+    param_count_b: 7.0
+    download_size_gb: 15
+    tier: "L"
+    default_for_tier: true
+    tested: false  # not yet verified on real hardware (Phase 2 work)
+    lora:
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj",
+                       "gate_proj", "up_proj", "down_proj"]
+      rank: 8
+      alpha: 16
+    serving:
+      backend: "vllm"
+      max_model_len: 16384
+      tool_call_parser: "qwen3_xml"
+      enable_auto_tool_choice: true
+
+  qwen-2.5-7b-dense:
+    # Fallback if Qwen3.6-7B is not yet uploaded or fails to download.
+    # Same family, very close architecture, well-tested.
+    hf_id: "Qwen/Qwen2.5-7B-Instruct"
+    arch: "dense"
+    param_count_b: 7.0
+    download_size_gb: 15
+    tier: "L"
+    default_for_tier: false
+    tested: false  # not yet verified on real hardware (Phase 2 work)
+    lora:
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj",
+                       "gate_proj", "up_proj", "down_proj"]
+      rank: 8
+      alpha: 16
+    serving:
+      backend: "vllm"
+      max_model_len: 16384
+      tool_call_parser: "hermes"
+      enable_auto_tool_choice: true
+
+  qwen-2.5-1.5b-dense:
+    # XS tier — small enough for laptops and CPUs. Mainly for first-run
+    # smoke tests, not real personal-AI usage.
+    hf_id: "Qwen/Qwen2.5-1.5B-Instruct"
+    arch: "dense"
+    param_count_b: 1.5
+    download_size_gb: 3
+    tier: "XS"
+    default_for_tier: true
+    tested: false  # not yet verified on real hardware (Phase 2 work)
+    lora:
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+      rank: 8
+      alpha: 16
+    serving:
+      backend: "vllm"
+      max_model_len: 8192
+      tool_call_parser: "hermes"
+      enable_auto_tool_choice: true

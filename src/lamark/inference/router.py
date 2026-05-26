@@ -49,16 +49,12 @@ class RoutingContext:
     metadata: dict = field(default_factory=dict)
 
 
-# Patterns kept as module-level so they compile once. ASCII + Cyrillic.
+# Patterns kept as module-level so they compile once.
 _CODE_FENCE_RE = re.compile(r"```[a-zA-Z]*\n.*?```", re.DOTALL)
 _INLINE_CODE_LIKE_RE = re.compile(r"(\bdef\s+\w+\(|\bclass\s+\w+\b|\bfn\s+\w+\(|=>\s*\{|\bimport\s+\w+)")
 _WRITING_KEYWORDS = (
-    # English
     "write", "draft", "compose", "blog", "article", "essay", "post", "letter",
-    "rewrite", "summary", "tweet",
-    # Russian
-    "напиши", "напишу", "сочини", "блог", "статью", "статья", "пост ",
-    "перепиши", "сводка", "резюме", "письмо", "сочинение",
+    "rewrite", "summary", "tweet", "paragraph", "story", "narrative",
 )
 
 

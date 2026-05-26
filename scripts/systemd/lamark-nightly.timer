@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Lamark nightly retrain at 03:17 local time
+Requires=lamark-nightly.service
+
+[Timer]
+# Run daily at 03:17 — chosen to avoid the round-hour traffic spike.
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

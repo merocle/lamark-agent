@@ -26,6 +26,10 @@ LAMARK_VENV="${LAMARK_VENV:-$LAMARK_HOME/venv}"
 LAMARK_MODEL_DIR="${LAMARK_MODEL_DIR:-$LAMARK_HOME/models}"
 LAMARK_BIN_DIR="${LAMARK_BIN_DIR:-$LAMARK_HOME/bin}"
 
+# Resolve the repo root from this script's location so the launcher symlink
+# and config-template references work regardless of where the script is run.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 PRIMARY_MODEL="Qwen/Qwen3.6-35B-A3B"
 DENSE_MODEL="Qwen/Qwen3.6-27B"
 
@@ -171,21 +175,22 @@ if [ ! -f "$PATCH_FILE" ] || [ "$FORCE" -eq 1 ]; then
     log "Installing Kreuzhofer eager-loader patch..."
     cat > "$PATCH_FILE" <<'PATCH'
 """
-Eager direct-to-CUDA safetensors loader. Hooks safetensors.safe_open to free
+Eager direct-to-CUDA safetensors loader. Hooks safetensors.safe_open to drop
 page cache after each shard, avoiding mmap + CUDA double allocation OOM on
 DGX Spark unified memory.
 
+v2: replaced the @contextmanager generator wrapper with a proxy class that
+exposes both context-manager AND direct attribute access. transformers >= 5.9
+calls `safe_open(...).keys()` outside any `with` block and the old wrapper
+returned a _GeneratorContextManager that had no .keys.
+
 Reference: Daniel Kreuzhofer, NVIDIA Developer Forum
   https://forums.developer.nvidia.com/t/bf16-lora-fine-tuning-of-qwen3-5-35b-a3b-on-dgx-spark-no-quantization-required/363268
-
-Activate by importing this module before transformers.from_pretrained:
-    import lamark.eager_loader_patch  # noqa: F401
 """
 from __future__ import annotations
 
 import ctypes
 import os
-from contextlib import contextmanager
 
 try:
     import safetensors  # type: ignore
@@ -204,33 +209,40 @@ def _fadvise_dontneed(path: str) -> None:
         finally:
             os.close(fd)
     except OSError:
-        # Best-effort: if fadvise unavailable, silently skip.
         pass
 
 
-@contextmanager
-def eager_safe_open(filename, framework="pt", device="cpu"):
-    """Wrapper for safetensors.safe_open that drops page cache after close."""
-    if safetensors is None:
-        raise RuntimeError("safetensors not installed")
-    f = safetensors.safe_open(filename, framework=framework, device=device)
-    try:
-        yield f
-    finally:
+class _EagerSafeOpen:
+    """Proxy around the real SafeOpen supporting both context-manager use
+    and direct attribute access (.keys, .get_tensor, etc.)."""
+
+    def __init__(self, filename, framework="pt", device="cpu"):
+        self._filename = filename
+        self._inner = safetensors._orig_safe_open(filename, framework=framework, device=device)
+
+    def __enter__(self):
+        if hasattr(self._inner, "__enter__"):
+            return self._inner.__enter__()
+        return self._inner
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         try:
-            f.__exit__(None, None, None) if hasattr(f, "__exit__") else None
+            if hasattr(self._inner, "__exit__"):
+                return self._inner.__exit__(exc_type, exc_val, exc_tb)
         finally:
-            _fadvise_dontneed(str(filename))
+            _fadvise_dontneed(str(self._filename))
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
 
 
 def install() -> None:
-    """Monkey-patch safetensors.safe_open to use the eager variant."""
     if safetensors is None:
         return
     if getattr(safetensors, "_lamark_patched", False):
         return
     safetensors._orig_safe_open = safetensors.safe_open  # type: ignore[attr-defined]
-    safetensors.safe_open = eager_safe_open  # type: ignore[attr-defined]
+    safetensors.safe_open = _EagerSafeOpen  # type: ignore[attr-defined]
     safetensors._lamark_patched = True  # type: ignore[attr-defined]
 
 
@@ -240,6 +252,95 @@ PATCH
 else
     ok "Eager-loader patch already in place"
 fi
+
+# ---- hermes-home config + Lamark launcher --------------------------------
+HERMES_HOME_DIR="$LAMARK_HOME/hermes-home"
+mkdir -p "$HERMES_HOME_DIR"
+
+CFG_FILE="$HERMES_HOME_DIR/config.yaml"
+if [ ! -f "$CFG_FILE" ] || [ "$FORCE" -eq 1 ]; then
+    cp "$REPO_ROOT/scripts/hermes-home-template/config.yaml" "$CFG_FILE"
+    ok "Hermes-home config installed at $CFG_FILE"
+else
+    ok "Hermes-home config already in place"
+fi
+
+ENV_FILE="$HERMES_HOME_DIR/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    cat > "$ENV_FILE" <<EOF
+LM_API_KEY=not-needed
+LM_BASE_URL=http://127.0.0.1:8000/v1
+EOF
+    ok "Hermes-home .env initialised"
+fi
+
+LAUNCHER_BIN="$LAMARK_BIN_DIR/lamark"
+mkdir -p "$LAMARK_BIN_DIR"
+# Make every cmd/*.sh executable and symlink the dispatcher into $LAMARK_BIN_DIR.
+chmod +x "$REPO_ROOT/scripts/lamark" 2>/dev/null || true
+find "$REPO_ROOT/scripts/cmd" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+
+if [ ! -L "$LAUNCHER_BIN" ] || [ "$FORCE" -eq 1 ]; then
+    ln -sf "$REPO_ROOT/scripts/lamark" "$LAUNCHER_BIN"
+    ok "Lamark dispatcher symlinked to $LAUNCHER_BIN"
+else
+    ok "Lamark dispatcher already in place"
+fi
+
+# ---- nightly retrain timer (systemd) --------------------------------------
+chmod +x "$REPO_ROOT/scripts/lamark-nightly-train.sh" 2>/dev/null || true
+
+if [ "${SKIP_TIMER:-0}" -eq 1 ]; then
+    warn "Skipping nightly retrain timer install (SKIP_TIMER=1)"
+elif command -v systemctl >/dev/null 2>&1; then
+    USER_NAME="${SUDO_USER:-$USER}"
+    SYSTEMD_DIR="/etc/systemd/system"
+    SERVICE_SRC="$REPO_ROOT/scripts/systemd/lamark-nightly.service"
+    TIMER_SRC="$REPO_ROOT/scripts/systemd/lamark-nightly.timer"
+
+    if [ -w "$SYSTEMD_DIR" ] || sudo -n true 2>/dev/null; then
+        SVC_UNIT="$SYSTEMD_DIR/lamark-nightly@${USER_NAME}.service"
+        TIMER_UNIT="$SYSTEMD_DIR/lamark-nightly@${USER_NAME}.timer"
+
+        # Materialize templated units (% i -> actual username).
+        sed "s/%i/${USER_NAME}/g" "$SERVICE_SRC" | sudo tee "$SVC_UNIT"   >/dev/null
+        sed "s/%i/${USER_NAME}/g" "$TIMER_SRC"   | sudo tee "$TIMER_UNIT" >/dev/null
+        sudo systemctl daemon-reload
+        sudo systemctl enable "lamark-nightly@${USER_NAME}.timer" >/dev/null 2>&1 || true
+        sudo systemctl start  "lamark-nightly@${USER_NAME}.timer" >/dev/null 2>&1 || true
+        ok "Nightly retrain timer installed (lamark-nightly@${USER_NAME}.timer)"
+    else
+        warn "No sudo; copy scripts/systemd/lamark-nightly.{service,timer} to ~/.config/systemd/user/ manually."
+    fi
+else
+    warn "systemctl not found; nightly timer not installed."
+fi
+
+# ---- hardware detection + tier-aware model selection ---------------------
+log "Detecting hardware tier..."
+HW_JSON=$(PYTHONPATH="$REPO_ROOT/src" "$LAMARK_VENV/bin/python" -m lamark.hardware 2>/dev/null || echo "{}")
+TIER=$(echo "$HW_JSON" | "$LAMARK_VENV/bin/python" -c "import json,sys; d=json.load(sys.stdin); print(d.get('tier','NONE'))")
+RECOMMENDED_MODEL=$(echo "$HW_JSON" | "$LAMARK_VENV/bin/python" -c "import json,sys; d=json.load(sys.stdin); print(d.get('recommended_model') or '')")
+
+if [ "$TIER" = "NONE" ] || [ -z "$RECOMMENDED_MODEL" ]; then
+    warn "Hardware tier could not be determined. Falling back to legacy 35B-A3B."
+    RECOMMENDED_MODEL="qwen-3.6-35b-a3b-moe"
+else
+    ok "Hardware tier: $TIER → default model: $RECOMMENDED_MODEL"
+fi
+
+# Allow the user (or downstream tooling) to override via env var.
+LAMARK_MODEL="${LAMARK_MODEL:-$RECOMMENDED_MODEL}"
+
+# Look up the HF id from the registry.
+HF_ID=$(PYTHONPATH="$REPO_ROOT/src" "$LAMARK_VENV/bin/python" -c "
+from lamark.registry import get_model
+print(get_model('$LAMARK_MODEL').hf_id)
+" 2>/dev/null)
+if [ -z "$HF_ID" ]; then
+    fail "Model '$LAMARK_MODEL' not in scripts/model-registry.yaml. Aborting."
+fi
+ok "Will download $HF_ID for model '$LAMARK_MODEL'"
 
 # ---- model downloads ------------------------------------------------------
 if [ "$SKIP_MODELS" -eq 1 ]; then
@@ -255,13 +356,11 @@ else
             return
         fi
         log "Downloading $repo (this may take 30-60 min on first run)..."
-        python -c "
+        "$LAMARK_VENV/bin/python" -c "
 from huggingface_hub import snapshot_download
-import os
 snapshot_download(
     repo_id='$repo',
     local_dir=r'$local_dir',
-    local_dir_use_symlinks=False,
     max_workers=8,
 )
 print('downloaded:', '$repo')
@@ -269,28 +368,34 @@ print('downloaded:', '$repo')
         ok "Model $repo ready at $local_dir"
     }
 
-    download_model "$PRIMARY_MODEL"
-    if [ "$PRIMARY_ONLY" -eq 0 ]; then
-        download_model "$DENSE_MODEL"
-    else
-        warn "Skipping dense model (--primary-only); Phase 2 will need it later"
-    fi
+    download_model "$HF_ID"
 fi
 
 # ---- final summary --------------------------------------------------------
 echo
 echo "=================================================================="
-ok "Spark provisioning complete."
+ok "Lamark provisioning complete."
 echo "=================================================================="
+echo
+echo "Detected hardware tier: $TIER"
+echo "Default model:          $LAMARK_MODEL ($HF_ID)"
 echo
 echo "Next steps:"
 echo "  1) source $ENV_FILE"
-echo "  2) python scripts/smoke_test.py --output smoke_test_results/first.json"
-echo "  3) If smoke test passes -> proceed to Phase 1 (Hermes fork)"
+echo "  2) $LAMARK_BIN_DIR/lamark chat"
+echo "     (or: $LAMARK_BIN_DIR/lamark switch-base <model-name> first)"
 echo
 echo "Locations:"
 echo "  venv:    $LAMARK_VENV"
 echo "  models:  $LAMARK_MODEL_DIR"
 echo "  bin:     $LAMARK_BIN_DIR"
 echo "  env:     $ENV_FILE"
+echo
+echo "Available models (lamark switch-base <name>):"
+PYTHONPATH="$REPO_ROOT/src" "$LAMARK_VENV/bin/python" -c "
+from lamark.registry import load_registry
+for name, entry in load_registry().items():
+    if hasattr(entry, 'hf_id'):
+        print(f'  {name:<28} tier={entry.tier} arch={entry.arch:<5} hf={entry.hf_id}')
+"
 echo

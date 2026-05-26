@@ -1,0 +1,18 @@
+[Unit]
+Description=Lamark nightly LoRA retrain
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=%i
+Environment=HOME=/home/%i
+Environment=LAMARK_HOME=/home/%i/.lamark
+Environment=LAMARK_REPO=/home/%i/lamark-agent
+ExecStart=/home/%i/lamark-agent/scripts/lamark-nightly-train.sh
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

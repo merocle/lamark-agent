@@ -1,0 +1,27 @@
+# Lamark Hermes-home configuration.
+#
+# Installed by scripts/setup_spark.sh into $LAMARK_HOME/hermes-home/config.yaml
+# (default ~/.lamark/hermes-home/config.yaml). Points the agent at the local
+# vLLM serving the trained model on port 8000.
+#
+# `lm-studio` is the Hermes transport (openai_chat); vLLM exposes the same
+# /v1/chat/completions surface so the same transport works.
+
+model:
+  default: lamark-cycle2
+  provider: lm-studio
+  base_url: http://127.0.0.1:8000/v1
+
+model_aliases:
+  lamark-cycle2:
+    model: lamark-cycle2
+    provider: lm-studio
+    base_url: http://127.0.0.1:8000/v1
+  lamark-identity:
+    model: lamark-identity
+    provider: lm-studio
+    base_url: http://127.0.0.1:8000/v1
+  qwen-base:
+    model: qwen-base
+    provider: lm-studio
+    base_url: http://127.0.0.1:8000/v1

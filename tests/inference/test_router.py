@@ -33,7 +33,7 @@ def test_long_writing_request_routes_to_dense_when_available() -> None:
 
     router = InferenceRouter(dense_available=True)
     backend = router.choose(
-        RoutingContext(prompt="напиши длинный пост в блог про эволюцию памяти LLM")
+        RoutingContext(prompt="write a long blog post about the evolution of LLM memory")
     )
     assert backend.name == "dense", (
         f"writing prompt with dense_available=True must route to dense; got {backend.name}"

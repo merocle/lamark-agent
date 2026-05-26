@@ -196,7 +196,7 @@ def show_status(args):
 
     nous_logged_in = bool(nous_status.get("logged_in"))
     nous_error = nous_status.get("error")
-    nous_label = "logged in" if nous_logged_in else "not logged in (run: hermes auth add nous --type oauth)"
+    nous_label = "logged in" if nous_logged_in else "not logged in (run: lamark auth add nous --type oauth)"
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
         f"{nous_label}"

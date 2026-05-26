@@ -40,7 +40,7 @@ THEORETICAL_CEILING_TOK_PER_S = 91.0
 HARD_FAIL_THRESHOLD = 22.0  # ~ 80% of Rikkarth measured
 WARN_THRESHOLD = 25.0  # below this, plan capacity at 50-70%
 
-# Per Кройцхофер NVIDIA forum thread — bf16 weights for Qwen3.5/3.6-35B-A3B
+# Per Kreuzhofer NVIDIA forum thread — bf16 weights for Qwen3.5/3.6-35B-A3B
 EXPECTED_BF16_WEIGHTS_GB = 67.0
 EXPECTED_FP8_WEIGHTS_GB = 36.0
 USABLE_UNIFIED_MEMORY_GB = 119.0  # of 128 GB on DGX Spark

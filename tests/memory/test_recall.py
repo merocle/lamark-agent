@@ -100,7 +100,8 @@ def test_recall_with_unicode_query(store_with_facts) -> None:
     from lamark.memory.recall import recall
 
     # Should not raise; result may be empty if no fact matches.
-    hits = recall(store_with_facts, query="программирование на Kotlin", k=3)
+    # Non-Latin chars ensure the tokenizer handles unicode without crashing.
+    hits = recall(store_with_facts, query="プログラミング Kotlin", k=3)
     assert isinstance(hits, list)
 
 

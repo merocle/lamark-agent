@@ -1,0 +1,86 @@
+#!/bin/bash
+# Lamark command dispatcher.
+#
+# Routes `lamark <command> [args]` to scripts/cmd/<command>.sh.
+# If the command is unknown, falls through to `lamark chat <args>` for
+# backward compat with launch-lamark.sh users.
+#
+# Layout:
+#   scripts/lamark              ← this dispatcher (symlinked to ~/.lamark/bin/lamark)
+#   scripts/cmd/setup.sh        ← `lamark setup`     — wizard (3 branches)
+#   scripts/cmd/chat.sh         ← `lamark chat`      — interactive REPL
+#   scripts/cmd/serve.sh        ← `lamark serve`     — start/stop local vLLM
+#   scripts/cmd/status.sh       ← `lamark status`    — health
+#   scripts/cmd/switch-base.sh  ← `lamark switch-base <model>`
+#   scripts/cmd/logs.sh         ← `lamark logs`      — tail recent log
+set -euo pipefail
+
+# Resolve repo root from this script's location (handles symlinks).
+SELF="$(readlink -f "$0")"
+REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+# Default location for runtime state.
+export LAMARK_HOME="${LAMARK_HOME:-$HOME/.lamark}"
+export LAMARK_REPO="$REPO"
+
+CMD_DIR="$REPO/scripts/cmd"
+
+usage() {
+    cat <<EOF
+Lamark — locally-hosted personal AI agent
+
+Usage: lamark <command> [args]
+
+Setup & lifecycle:
+  setup                 First-time wizard (local / existing endpoint / cloud-first)
+  serve [start|stop|status]
+                        Manage the local vLLM model server
+  status                Show overall health (model server, last train, memory)
+  switch-base <model>   Switch the default base model from the registry
+  logs [vllm|nightly|chat]
+                        Tail recent logs
+
+Conversation:
+  chat [args]           Open interactive chat (default if no subcommand)
+
+Training:
+  train --now           Run retrain immediately (respects min_pairs threshold)
+  train --now --force   Same, but bypass threshold
+  train --status        Last run, next scheduled, pending pairs
+  config {get|set} key [value]    Edit training/model settings
+
+Other Hermes commands (memory, sessions, skills, etc.):
+  Run \`lamark help-hermes\` to see the full Hermes CLI surface.
+EOF
+}
+
+if [ $# -eq 0 ]; then
+    usage
+    exit 0
+fi
+
+cmd="$1"; shift
+
+case "$cmd" in
+    -h|--help|help)
+        usage; exit 0
+        ;;
+    help-hermes)
+        # Forward to Hermes's own --help via the chat command path.
+        exec "$CMD_DIR/chat.sh" --help "$@"
+        ;;
+    setup|serve|status|switch-base|logs|chat|train|config)
+        if [ ! -x "$CMD_DIR/$cmd.sh" ]; then
+            echo "ERROR: $CMD_DIR/$cmd.sh missing or not executable" >&2
+            exit 2
+        fi
+        exec "$CMD_DIR/$cmd.sh" "$@"
+        ;;
+    *)
+        # Backward compat: anything else falls through to the chat subcommand,
+        # which itself forwards unknown flags to Hermes (so `lamark sessions
+        # list` etc. still work even though we didn't add a thin wrapper for
+        # every Hermes subcommand).
+        exec "$CMD_DIR/chat.sh" "$cmd" "$@"
+        ;;
+esac
