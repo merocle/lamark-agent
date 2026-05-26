@@ -32,6 +32,10 @@ class ServingConfig:
     expert_parallel: bool = False
     tool_call_parser: Optional[str] = None
     enable_auto_tool_choice: bool = True
+    # GPU memory utilization fraction passed to vLLM. 0.80 default leaves
+    # headroom for the agent runtime + KV cache spikes; on tier S (Spark,
+    # 128 GB unified) higher values trigger memory pressure thrashing.
+    gpu_memory_utilization: float = 0.85
 
 
 @dataclass
@@ -101,6 +105,7 @@ def load_registry(path: Optional[Path] = None) -> dict[str, ModelEntry | TierSpe
                 expert_parallel=bool(serving.get("expert_parallel", False)),
                 tool_call_parser=serving.get("tool_call_parser"),
                 enable_auto_tool_choice=bool(serving.get("enable_auto_tool_choice", True)),
+                gpu_memory_utilization=float(serving.get("gpu_memory_utilization", 0.85)),
             ),
         )
 

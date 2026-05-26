@@ -76,13 +76,15 @@ print(json.dumps({
     'max_model_len': e.serving.max_model_len,
     'expert_parallel': e.serving.expert_parallel,
     'tool_call_parser': e.serving.tool_call_parser or '',
+    'gpu_memory_utilization': e.serving.gpu_memory_utilization,
 }))
 ")"
-    local hf_id max_len ep tcp
+    local hf_id max_len ep tcp gmu
     hf_id="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['hf_id'])")"
     max_len="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['max_model_len'])")"
     ep="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['expert_parallel'])")"
     tcp="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['tool_call_parser'])")"
+    gmu="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['gpu_memory_utilization'])")"
     local local_dir="$LAMARK_HOME/models/hf/$(echo "$hf_id" | tr '/' '_')"
     [ -d "$local_dir" ] || { echo "ERROR: model not downloaded at $local_dir. Run \`lamark setup\`."; exit 3; }
 
@@ -156,7 +158,7 @@ print(json.dumps({
         -w /lamark \
         --entrypoint /bin/bash \
         "$image" \
-        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $resolved_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization 0.85 --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name qwen-base $tcp_flag $tpl_flag $lora_flags" \
+        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $resolved_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name qwen-base $tcp_flag $tpl_flag $lora_flags" \
         > "$LOG_FILE" 2>&1
 
     echo "Container started. Tail log: lamark logs vllm"

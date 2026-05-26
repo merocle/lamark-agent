@@ -143,6 +143,25 @@ command in Phase 2.
 
 ---
 
+## Operational notes
+
+- **Stop `lamark serve` before `apt upgrade`.** A combination of vLLM
+  serving + kernel/driver swap + post-reboot model reload can push the
+  host into sustained memory pressure (we saw it on Spark-01 — the host
+  remained up but SSH/Tailscale stopped responding for ~20 minutes
+  before vLLM finally crashed and freed memory). `lamark serve stop`
+  first, then upgrade, then `lamark serve start`.
+- **Default `max_model_len` is 32768** for tier S. The Hermes Agent
+  minimum of 64K is satisfied via an in-memory accounting override in
+  the config — not by allocating an actual 65K KV cache, which would
+  consume ~10 GB extra unified memory on Spark and increase the risk
+  of the above pressure event.
+- **`lamark logs vllm`** is your friend when something feels slow.
+  Repeated `systemd-journald: Under memory pressure, flushing caches.`
+  in your kernel log is the canary.
+
+---
+
 ## Privacy
 
 The reason Lamark exists on your hardware instead of in the cloud:

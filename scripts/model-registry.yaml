@@ -56,11 +56,19 @@ models:
       alpha: 32
     serving:
       backend: "vllm"
-      # 65536 (not 32768): Hermes Agent rejects context < 64K. Qwen3.6-MoE
-      # supports up to 262K, but 64K balances Spark unified-memory pressure
-      # against Hermes's minimum.
-      max_model_len: 65536
+      # 32768 not 65536: a 65k KV cache + 67 GB model + JIT + CUDA graphs
+      # pushed Spark-01 into sustained memory pressure (journald flushed
+      # caches every 15 sec for 20+ minutes, then vLLM crashed with
+      # EngineCoreError). 32k keeps everything well inside 128 GB unified
+      # memory headroom. Hermes Agent's 64K minimum is satisfied via the
+      # `context_length: 65536` override the setup wizard writes into
+      # the user's config.yaml — that's an in-memory accounting hint to
+      # Hermes, not a real vLLM context size.
+      max_model_len: 32768
       expert_parallel: true
+      # Drop 0.85 → 0.80 to leave room for the agent runtime + KV cache
+      # spikes during long conversations.
+      gpu_memory_utilization: 0.80
       tool_call_parser: "qwen3_xml"
       enable_auto_tool_choice: true
 
