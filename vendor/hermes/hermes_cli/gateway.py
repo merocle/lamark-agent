@@ -2807,6 +2807,48 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
+    # LAMARK-PATCH (A.7): parse $HERMES_HOME/env for `export KEY=VALUE` lines
+    # and include them in the launchd EnvironmentVariables block. Without
+    # this, the daemon launched by launchd has no LM_BASE_URL / LM_API_KEY /
+    # HERMES_INFERENCE_* and falls back to the lm-studio default
+    # (http://127.0.0.1:1234/v1), failing every API call. Plain
+    # `source ~/.lamark/hermes-home/env` works for interactive shells but
+    # launchd doesn't read it — env must be inlined into the plist.
+    extra_env_xml = ""
+    env_file = get_hermes_home() / "env"
+    if env_file.is_file():
+        extra_env_pairs: list[tuple[str, str]] = []
+        try:
+            for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                # Strip surrounding quotes from value (single or double).
+                value = value.strip().strip('"').strip("'")
+                if key in {"PATH", "VIRTUAL_ENV", "HERMES_HOME"}:
+                    # Already handled above; don't double-write.
+                    continue
+                if not key.replace("_", "").isalnum():
+                    continue
+                extra_env_pairs.append((key, value))
+        except OSError:
+            pass
+        if extra_env_pairs:
+            lines = []
+            for k, v in extra_env_pairs:
+                # Minimal XML escaping for value
+                ve = (v.replace("&", "&amp;")
+                       .replace("<", "&lt;")
+                       .replace(">", "&gt;"))
+                lines.append(f"        <key>{k}</key>\n        <string>{ve}</string>")
+            extra_env_xml = "\n" + "\n".join(lines)
+
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
         f"<string>{python_path}</string>",
@@ -2845,7 +2887,7 @@ def generate_launchd_plist() -> str:
         <key>VIRTUAL_ENV</key>
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{hermes_home}</string>{extra_env_xml}
     </dict>
     
     <key>RunAtLoad</key>
