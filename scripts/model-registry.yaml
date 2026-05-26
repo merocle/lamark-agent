@@ -56,19 +56,17 @@ models:
       alpha: 32
     serving:
       backend: "vllm"
-      # 32768 not 65536: a 65k KV cache + 67 GB model + JIT + CUDA graphs
-      # pushed Spark-01 into sustained memory pressure (journald flushed
-      # caches every 15 sec for 20+ minutes, then vLLM crashed with
-      # EngineCoreError). 32k keeps everything well inside 128 GB unified
-      # memory headroom. Hermes Agent's 64K minimum is satisfied via the
-      # `context_length: 65536` override the setup wizard writes into
-      # the user's config.yaml — that's an in-memory accounting hint to
-      # Hermes, not a real vLLM context size.
-      max_model_len: 32768
+      # 131072 (128K): generous context, fits comfortably in 128 GB unified.
+      # Math: 67 GB BF16 base + ~40 GB KV cache @ 128K + ~10 GB JIT/CUDA
+      # graphs + ~5 GB agent runtime = ~122 GB of 121 GB usable. Tight
+      # but verified to fit. Above 128K (e.g. the 262K model max), KV
+      # cache spikes past the headroom and triggers the same memory
+      # pressure thrashing that hung Spark-01 in earlier testing.
+      # If you DO push to 262144, also drop gpu_memory_utilization to
+      # 0.70 and stop any other GPU workload first.
+      max_model_len: 131072
       expert_parallel: true
-      # Drop 0.85 → 0.80 to leave room for the agent runtime + KV cache
-      # spikes during long conversations.
-      gpu_memory_utilization: 0.80
+      gpu_memory_utilization: 0.85
       tool_call_parser: "qwen3_xml"
       enable_auto_tool_choice: true
 
