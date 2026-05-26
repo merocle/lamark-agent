@@ -69,7 +69,7 @@ case "$cmd" in
         # Forward to Hermes's own --help via the chat command path.
         exec "$CMD_DIR/chat.sh" --help "$@"
         ;;
-    setup|serve|status|switch-base|logs|chat|train|config)
+    setup|serve|status|switch-base|logs|chat|train|config|gateway)
         if [ ! -x "$CMD_DIR/$cmd.sh" ]; then
             echo "ERROR: $CMD_DIR/$cmd.sh missing or not executable" >&2
             exit 2
