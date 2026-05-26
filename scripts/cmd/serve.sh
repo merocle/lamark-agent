@@ -143,19 +143,25 @@ print(json.dumps({
     # a future version or fall back to a tested older release).
     local image="${LAMARK_VLLM_IMAGE:-vllm/vllm-openai:v0.21.0}"
 
-    # The model dir on host: $LAMARK_HOME/models/hf/<flattened_hf_id>.
-    # On Spark the symlink may point into a shared NAS — mount /mnt:ro if
-    # that's where the resolved path leads, so the symlink chase succeeds
-    # inside the container.
-    local host_model_dir="$LAMARK_HOME/models/hf/$(echo "$hf_id" | tr '/' '_')"
+    # Model location: host path + container-internal path.
+    # We always pass the CONTAINER path to `vllm serve` (host paths aren't
+    # reachable inside the container). If the host path is a symlink that
+    # resolves into /mnt (Spark with a NAS-mounted HF cache), we also mount
+    # /mnt:/mnt:ro so the symlink chase succeeds inside the container.
+    local flat_hf_id; flat_hf_id="$(echo "$hf_id" | tr '/' '_')"
+    local host_model_dir="$LAMARK_HOME/models/hf/$flat_hf_id"
+    local container_model_dir="/lamark/models/hf/$flat_hf_id"
     local resolved_model_dir; resolved_model_dir="$(readlink -f "$host_model_dir")"
     local nas_mount=""
     if [[ "$resolved_model_dir" == /mnt/* ]]; then
         nas_mount="-v /mnt:/mnt:ro"
     fi
+    # Use `--restart=no` (not `unless-stopped`): a crash-looping container
+    # spams the log and hides the real error. Surface the failure once and
+    # let the operator decide.
 
     docker run -d --name "$CONTAINER_NAME" \
-        --restart=unless-stopped --gpus all --ipc=host \
+        --restart=no --gpus all --ipc=host \
         --ulimit memlock=-1 --ulimit stack=67108864 --shm-size=16g \
         -p 8000:8000 \
         -e TORCH_CUDA_ARCH_LIST=12.1 \
@@ -165,7 +171,7 @@ print(json.dumps({
         -w /lamark \
         --entrypoint /bin/bash \
         "$image" \
-        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $resolved_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name qwen-base $tcp_flag $tpl_flag $lora_flags" \
+        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name qwen-base $tcp_flag $tpl_flag $lora_flags" \
         > "$LOG_FILE" 2>&1
 
     echo "Container started. Tail log: lamark logs vllm"
