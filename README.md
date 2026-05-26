@@ -16,6 +16,12 @@ become part of the next generation of its weights.
 
 ## Quick install
 
+> **v0.1.0-alpha.0 is in private testing.** The `curl | bash` URL
+> below will return HTTP 404 until the repo is flipped to public after
+> a successful round of installs on hardware the author doesn't own.
+> Invited testers: see [`docs/private-testing.md`](docs/private-testing.md)
+> for the `gh repo clone` / PAT / tarball install paths.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Merocle/lamark-agent/main/install.sh | bash
 
