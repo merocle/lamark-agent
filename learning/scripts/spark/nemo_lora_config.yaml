@@ -1,0 +1,82 @@
+# NeMo 2.0 LoRA SFT config — Nemotron Nano on DGX Spark GB10 (sm_121)
+#
+# Used by 03_train_lora.py via nemo_run / nemo.lightning.
+# All overridable from the shell via MODEL_ID / DATA_TRAIN / DATA_VAL env vars.
+
+name: nemotron-nano-lora-sft
+
+# ── Trainer ──────────────────────────────────────────────────────────────────
+trainer:
+  accelerator: gpu
+  devices: 1                  # single GB10; set to 2 if both GPUs are available
+  num_nodes: 1
+  precision: bf16-mixed       # bf16 required — see load-bearing invariants
+  max_steps: 200              # small run: ~200 steps validates end-to-end
+  val_check_interval: 50
+  log_every_n_steps: 10
+  enable_checkpointing: true
+  gradient_clip_val: 1.0
+
+# ── LoRA ─────────────────────────────────────────────────────────────────────
+peft:
+  peft_scheme: lora
+  lora_tuning:
+    target_modules:
+      - linear_qkv            # combined QKV projection
+      - linear_proj           # output projection
+    adapter_dim: 16           # rank
+    alpha: 32                 # scaling; alpha/rank=2 is standard
+    dropout: 0.05
+    column_init_method: normal
+    row_init_method: zero
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+model:
+  # HF model ID or local path; overridden by MODEL_ID env var in train script
+  pretrained_model_name_or_path: nvidia/Nemotron-Nano-Omni-3B
+  trust_remote_code: true
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+data:
+  train_ds:
+    file_path: /workspace/data/train.jsonl     # overridden by DATA_TRAIN env var
+    max_seq_length: 2048
+    micro_batch_size: 2
+    global_batch_size: 8
+    shuffle: true
+    num_workers: 4
+    pin_memory: true
+    label_key: conversations
+    prompt_template: "{input}"                 # NeMo fills from conversation turns
+
+  validation_ds:
+    file_path: /workspace/data/val.jsonl       # overridden by DATA_VAL env var
+    max_seq_length: 2048
+    micro_batch_size: 2
+    global_batch_size: 8
+    shuffle: false
+    num_workers: 2
+
+# ── Optimizer ────────────────────────────────────────────────────────────────
+optim:
+  name: adamw
+  lr: 2.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  sched:
+    name: cosine_annealing
+    warmup_steps: 20
+    min_lr: 1.0e-6
+    last_epoch: -1
+
+# ── Checkpointing ─────────────────────────────────────────────────────────────
+exp_manager:
+  name: ${name}
+  exp_dir: /workspace/checkpoints
+  create_tensorboard_logger: false
+  create_wandb_logger: false
+  checkpoint_callback_params:
+    save_top_k: 1
+    monitor: val_loss
+    mode: min
+    save_last: true
