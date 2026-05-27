@@ -1,11 +1,15 @@
 #!/bin/bash
-# `lamark train [--now|--status|--config]` — control nightly retrain pipeline.
+# `lamark train [--now|--status|--config|--schedule]` — control nightly retrain pipeline.
 #
 #   lamark train --now            run scripts/lamark-nightly-train.sh immediately,
 #                                 respecting the training.min_pairs threshold
 #   lamark train --now --force    same, but bypass the threshold (always train)
 #   lamark train --status         show last run, next scheduled, pending pairs
 #   lamark train --config         show current training config (frequency + threshold)
+#   lamark train --schedule       show current systemd timer schedule + next firing
+#   lamark train --schedule "<spec>"   install/update systemd timer with given OnCalendar value
+#                                 (e.g. "*-*-* 03:00:00" for nightly 3am)
+#   lamark train --schedule off   disable the timer (keeps unit files for easy re-enable)
 set -euo pipefail
 
 LAMARK_HOME="${LAMARK_HOME:-$HOME/.lamark}"
@@ -67,14 +71,94 @@ for line in sys.stdin:
         warn "No training history yet."
     fi
 
-    # Next scheduled (systemd timer)
-    local user_name="${SUDO_USER:-$USER}"
-    if systemctl list-timers --all 2>/dev/null | grep -q "lamark-nightly@${user_name}"; then
-        local next; next=$(systemctl list-timers "lamark-nightly@${user_name}.timer" --no-pager --no-legend 2>/dev/null | awk '{print $1, $2}')
+    # Next scheduled (systemd timer — user-scope, installed by `lamark train --schedule`)
+    if systemctl --user list-timers --all 2>/dev/null | grep -q "lamark-trainer.timer"; then
+        local next; next=$(systemctl --user list-timers lamark-trainer.timer --no-pager --no-legend 2>/dev/null | awk '{print $1, $2}')
         ok "Next scheduled: $next"
     else
-        warn "Timer not installed. Run \`lamark setup\` to enable scheduled retrain."
+        warn "Timer not installed. Run \`lamark train --schedule \"*-*-* 03:00:00\"\` to enable nightly retrain."
     fi
+}
+
+# `lamark train --schedule [spec]` — manage the systemd --user timer that
+# fires `lamark-nightly-train.sh`. Three modes:
+#   no arg          → show current OnCalendar + next firing + active state
+#   off             → disable + stop the timer (unit files preserved)
+#   <OnCalendar>    → install/update timer with this systemd OnCalendar spec
+#                     (any systemd-valid value, e.g. "*-*-* 03:00:00" for
+#                     nightly 3am, "Sun *-*-* 04:30:00" for weekly Sun 04:30)
+cmd_schedule() {
+    local spec="${1:-}"
+    local timer_path="$HOME/.config/systemd/user/lamark-trainer.timer"
+    local service_path="$HOME/.config/systemd/user/lamark-trainer.service"
+
+    if [ -z "$spec" ]; then
+        echo "Lamark trainer schedule"
+        echo "======================="
+        if [ -f "$timer_path" ]; then
+            local cal; cal=$(grep '^OnCalendar=' "$timer_path" | head -1 | cut -d= -f2-)
+            ok "OnCalendar: $cal"
+            local active; active=$(systemctl --user is-active lamark-trainer.timer 2>/dev/null)
+            local enabled; enabled=$(systemctl --user is-enabled lamark-trainer.timer 2>/dev/null)
+            ok "State: $active (enabled-at-boot: $enabled)"
+            systemctl --user list-timers lamark-trainer.timer --no-pager 2>/dev/null | head -3
+        else
+            warn "Not configured. Install with: lamark train --schedule \"*-*-* 03:00:00\""
+        fi
+        return 0
+    fi
+
+    if [ "$spec" = "off" ]; then
+        if [ -f "$timer_path" ]; then
+            systemctl --user disable --now lamark-trainer.timer 2>&1 | tail -3
+            ok "Schedule disabled. Re-enable with: lamark train --schedule \"<OnCalendar>\""
+        else
+            warn "No timer installed; nothing to disable."
+        fi
+        return 0
+    fi
+
+    # Install / update the unit files. Use systemd %h for portability across
+    # users (Linger means service may run with a different cwd than current
+    # shell), and absolute repo path via LAMARK_REPO for the ExecStart so
+    # users who clone the repo elsewhere don't have to edit the unit.
+    mkdir -p "$(dirname "$timer_path")"
+    cat > "$service_path" <<EOF
+[Unit]
+Description=Lamark nightly trainer — adapt LoRA from accumulated pairs
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$LAMARK_REPO/scripts/lamark-nightly-train.sh
+EnvironmentFile=-%h/.lamark/hermes-home/.env
+EnvironmentFile=-%h/.lamark/hermes-home/env
+Environment="LAMARK_HOME=%h/.lamark"
+Environment="LAMARK_REPO=$LAMARK_REPO"
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+
+    cat > "$timer_path" <<EOF
+[Unit]
+Description=Lamark nightly trainer timer
+
+[Timer]
+OnCalendar=$spec
+Persistent=true
+Unit=lamark-trainer.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now lamark-trainer.timer 2>&1 | tail -3
+    ok "Schedule set: $spec"
+    systemctl --user list-timers lamark-trainer.timer --no-pager 2>/dev/null | head -3
 }
 
 cmd_config() {
@@ -110,22 +194,31 @@ case "$ACTION" in
     --now|now)     cmd_now ;;
     --status|status)   cmd_status ;;
     --config|config)   cmd_config ;;
+    --schedule|schedule)
+        # Pass second arg (OnCalendar spec or "off") through; empty means status.
+        cmd_schedule "${2:-}" ;;
     --force)       FORCE=1; cmd_now ;;
     -h|--help|help)
         cat <<EOF
-Usage: lamark train [--now|--status|--config] [--force]
+Usage: lamark train [--now|--status|--config|--schedule] [--force]
 
-  --now        Run the retrain pipeline immediately (respects threshold).
-  --now --force  Same, but train even if below the threshold.
-  --status     Show last run, next scheduled, pending pair count.
-  --config     Show current training frequency + threshold.
+  --now              Run the retrain pipeline immediately (respects threshold).
+  --now --force      Same, but train even if below the threshold.
+  --status           Show last run, next scheduled, pending pair count.
+  --config           Show current training frequency + threshold.
+  --schedule         Show current systemd timer schedule + next firing.
+  --schedule "<spec>"  Install/update the timer (OnCalendar systemd spec).
+                     Examples:
+                       "*-*-* 03:00:00"        nightly at 3am
+                       "Sun *-*-* 04:30:00"    weekly, Sunday 04:30
+                       "*-*-* 02,14:00:00"     twice daily, 2am & 2pm
+  --schedule off     Disable the timer (preserves unit files).
 
-To change settings:
-  lamark config set training.frequency weekly
+To change threshold:
   lamark config set training.min_pairs 100
 EOF
         ;;
     *)
-        echo "Usage: lamark train [--now|--status|--config] [--force]"
+        echo "Usage: lamark train [--now|--status|--config|--schedule] [--force]"
         exit 1 ;;
 esac

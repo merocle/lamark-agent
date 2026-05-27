@@ -19,7 +19,50 @@ LAMARK_HOME="${LAMARK_HOME:-$HOME/.lamark}"
 REPO="${LAMARK_REPO:-$HOME/lamark-agent}"
 VLLM_BASE_URL="${VLLM_BASE_URL:-http://127.0.0.1:8000/v1}"
 ADAPTER_DIR="${LAMARK_ADAPTER_DIR:-$LAMARK_HOME/adapters}"
-BASE_MODEL_DIR="${LAMARK_BASE_MODEL:-$LAMARK_HOME/models/hf/Qwen_Qwen3.6-35B-A3B}"
+
+# Resolve base model path from the registry rather than hardcoding the
+# BF16 entry — Lamark may switch between BF16 and FP8 (Stage 2 of the
+# perf push), and the trainer must follow the registry-declared default.
+# Override with LAMARK_BASE_MODEL=/abs/path for ad-hoc runs against a
+# non-default model.
+HERMES_HOME_PRE="${HERMES_HOME:-$LAMARK_HOME/hermes-home}"
+if [ -n "${LAMARK_BASE_MODEL:-}" ]; then
+    BASE_MODEL_DIR="$LAMARK_BASE_MODEL"
+else
+    # Resolve base via the registry. `model.default` in config.yaml may be
+    # the registry slug (preferred) OR a served-model alias like 'qwen-base'
+    # that vLLM also responds to but isn't a registry key. Try direct
+    # lookup first, then fall back to the tier-S default entry.
+    BASE_MODEL_DIR=$(PYTHONPATH="$REPO/src" "$LAMARK_HOME/venv/bin/python" - <<'PY' 2>/dev/null
+import os, yaml
+from pathlib import Path
+from lamark.registry import load_registry, get_model, ModelEntry
+
+lamark_home = os.environ["LAMARK_HOME"]
+hermes_home = os.environ["HERMES_HOME_PRE"]
+cfg = yaml.safe_load(open(f"{hermes_home}/config.yaml").read()) or {}
+name = (cfg.get("model") or {}).get("default") or ""
+
+entry = None
+try:
+    entry = get_model(name)
+except Exception:
+    # Fall back: pick the tier-S default model from the registry.
+    for n, e in load_registry().items():
+        if isinstance(e, ModelEntry) and e.tier == "S" and e.default_for_tier:
+            entry = e
+            break
+
+if entry is not None:
+    flat = entry.hf_id.replace("/", "_")
+    print(f"{lamark_home}/models/hf/{flat}")
+PY
+)
+    # Last-resort safety net so the trainer doesn't fail to start with an
+    # empty path if both lookups missed (e.g. registry not importable).
+    BASE_MODEL_DIR="${BASE_MODEL_DIR:-$LAMARK_HOME/models/hf/Qwen_Qwen3.6-35B-A3B-FP8}"
+fi
+export HERMES_HOME_PRE
 
 LOG_DIR="$LAMARK_HOME/logs"
 mkdir -p "$LOG_DIR" "$ADAPTER_DIR"
@@ -111,13 +154,18 @@ fi
 ADAPTER_NAME="nightly-$TS"
 log "Training adapter $ADAPTER_NAME (this takes 2-10 minutes)..."
 
-# Free the GPU so the training container can fit. Stop vLLM (will reload later).
+# Free the GPU so the training container can fit. We stop the production
+# serve container (lamark-vllm — see scripts/cmd/serve.sh) and remember to
+# restart it via `lamark serve start` once the adapter is saved. Note:
+# this DOES interrupt active chats for the training duration; an opt-in
+# zero-downtime path via vLLM /v1/load_lora_adapter would be cleaner but
+# is deferred until DFlash+LoRA combo stability lands upstream.
 PRIOR_VLLM_RUNNING=0
-if docker ps --filter "name=lamark-vllm-lora" -q | grep -q .; then
+if docker ps --filter "name=lamark-vllm" -q | grep -q .; then
     PRIOR_VLLM_RUNNING=1
-    log "Stopping vLLM to free GPU..."
-    docker stop lamark-vllm-lora >> "$LOG" 2>&1 || true
-    docker rm   lamark-vllm-lora >> "$LOG" 2>&1 || true
+    log "Stopping production vLLM (lamark-vllm) to free GPU for training..."
+    docker stop lamark-vllm >> "$LOG" 2>&1 || true
+    docker rm   lamark-vllm >> "$LOG" 2>&1 || true
     sleep 5
 fi
 
@@ -143,12 +191,13 @@ fi
 log "Adapter saved: $ADAPTER_DIR/$ADAPTER_NAME"
 
 # --- 3. Restart vLLM with new adapter --------------------------------------
-log "Restarting vLLM with new adapter loaded..."
-"$REPO/scripts/vllm_server.sh" --background \
-    --extra-lora "$ADAPTER_NAME=$ADAPTER_DIR/$ADAPTER_NAME" \
-    >> "$LOG" 2>&1 &
-sleep 30
-for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+# serve.sh auto-discovers adapters in $LAMARK_HOME/adapters/<name>/adapter_config.json
+# and emits --enable-lora --lora-modules <name>=<container_path>... — so we
+# just have to bounce the container and the fresh adapter is loaded.
+log "Restarting vLLM via \`lamark serve start\` (auto-loads new adapter)..."
+"$REPO/scripts/cmd/serve.sh" start >> "$LOG" 2>&1 || true
+# Warm-up: model load + CUDA graph compile takes 3-7 min on Spark.
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
     if curl -fsS -m 3 "$VLLM_BASE_URL/models" >/dev/null 2>&1; then
         log "vLLM ready after ${i}0s"
         break
@@ -158,11 +207,13 @@ done
 
 # --- 4. Eval-gate ----------------------------------------------------------
 log "Running eval-gate against $ADAPTER_NAME..."
+GATE_RESULT="rejected"
 if PYTHONPATH="$REPO/src" "$LAMARK_HOME/venv/bin/python" \
        -m lamark.train.eval_gate \
        --adapter-name "$ADAPTER_NAME" \
        --base-url "$VLLM_BASE_URL" >> "$LOG" 2>&1
 then
+    GATE_RESULT="promoted"
     log "PASS: gate accepted $ADAPTER_NAME — promoting to default."
     # Update HERMES_HOME config.yaml to point default → new adapter.
     HERMES_HOME_CFG="$LAMARK_HOME/hermes-home/config.yaml"
@@ -174,4 +225,22 @@ else
     log "FAIL: gate rejected $ADAPTER_NAME — previous default stays."
 fi
 
-log "=== Lamark nightly retrain complete ==="
+# --- 5. Record run outcome to train-history.jsonl --------------------------
+# One line per terminal state (skipped/promoted/rejected) so `lamark train
+# --status` and the Telegram notifier can read the latest result without
+# re-running the gate. Skipped runs are recorded earlier (before training).
+"$LAMARK_HOME/venv/bin/python" - <<PY >> "$LOG" 2>&1 || true
+import json, os
+record = {
+    "ts": "$TS",
+    "action": "$GATE_RESULT",
+    "n_pairs": int("$N_PAIRS"),
+    "adapter_name": "$ADAPTER_NAME",
+    "adapter_path": "$ADAPTER_DIR/$ADAPTER_NAME",
+}
+with open("$LAMARK_HOME/train-history.jsonl", "a", encoding="utf-8") as f:
+    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+print(f"history written: {record}")
+PY
+
+log "=== Lamark nightly retrain complete ($GATE_RESULT) ==="
