@@ -59,29 +59,66 @@ if [ -f "$DOWNLOAD_DIR/chat_template.jinja" ] && [ ! -f "$DOWNLOAD_DIR/lamark_ch
         --output "$DOWNLOAD_DIR/lamark_chat_template.jinja"
 fi
 
-# Update config.yaml — change default model + alias
+# Update config.yaml — change default model + alias + custom_providers entry.
+# Uses the `custom` provider (not `lm-studio`): the latter has a hardcoded
+# fallback base_url that breaks when env vars aren't perfectly threaded
+# through to the gateway daemon. `custom` reads base_url directly from
+# this file on every API call, and the endpoint appears in `/model`
+# pickers under Custom Models.
 "$VENV_PY" -c "
 import yaml
 from pathlib import Path
+
+# vLLM serves the model under the registry name on Spark, but the served
+# alias is 'qwen-base' (see scripts/cmd/serve.sh --served-model-name).
+# Clients call by the served name, so the alias and custom_provider
+# model entry should both be 'qwen-base', while the user-facing
+# default in config remains the human-readable registry slug.
+SERVED_NAME = 'qwen-base'
+
 p = Path(r'$HERMES_HOME/config.yaml')
 cfg = yaml.safe_load(p.read_text()) if p.is_file() else {}
-cfg.setdefault('model', {})['default'] = '$MODEL_NAME'
-cfg['model']['provider'] = 'lm-studio'
+
+cfg.setdefault('model', {})
+cfg['model']['default'] = SERVED_NAME
+cfg['model']['provider'] = 'custom'
 cfg['model']['base_url'] = 'http://127.0.0.1:8000/v1'
-cfg.setdefault('model_aliases', {})['$MODEL_NAME'] = {
-    'model': '$MODEL_NAME',
-    'provider': 'lm-studio',
+
+# Rebuild model_aliases — drop any prior lm-studio aliases for our model.
+aliases = cfg.setdefault('model_aliases', {})
+aliases[SERVED_NAME] = {
+    'model': SERVED_NAME,
+    'provider': 'custom',
     'base_url': 'http://127.0.0.1:8000/v1',
 }
+
+# Rebuild custom_providers — keep any non-Lamark entries the user added,
+# replace the Lamark one (matched by base_url pointing at our vLLM).
+existing = cfg.get('custom_providers') or []
+keep = [
+    p for p in existing
+    if isinstance(p, dict)
+    and 'lamark' not in (p.get('name') or '').lower()
+]
+keep.insert(0, {
+    'name': 'lamark-local',
+    'base_url': 'http://127.0.0.1:8000/v1',
+    'api_key': 'not-needed',
+    'models': [{
+        'name': SERVED_NAME,
+        'context_length': 131072,
+        'transport': 'openai_chat',
+    }],
+})
+cfg['custom_providers'] = keep
+
 p.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
 print('config.yaml updated.')
 "
 
-# Update env file
-if [ -f "$HERMES_HOME/env" ]; then
-    sed -i.bak "s|^export HERMES_INFERENCE_MODEL=.*|export HERMES_INFERENCE_MODEL=$MODEL_NAME|" "$HERMES_HOME/env"
-    rm -f "$HERMES_HOME/env.bak"
-fi
+# The env file is preserved as an extension point (for tool API keys
+# like TAVILY_API_KEY). After the lm-studio → custom migration there's
+# no per-model env var to rewrite here.
 
 echo ""
 echo "Default model switched to: $MODEL_NAME"

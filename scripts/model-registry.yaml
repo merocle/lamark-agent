@@ -44,7 +44,11 @@ models:
     active_param_count_b: 3.0
     download_size_gb: 67
     tier: "S"
-    default_for_tier: true
+    # Demoted from default in favor of the FP8 variant below (matches
+    # the reference DGX Spark perf repo at ~50 tok/s). BF16 is retained
+    # as the conservative fallback — zero quant loss, fewer surprises
+    # for users who pin the older variant via `lamark switch-base`.
+    default_for_tier: false
     tested: true   # verified on two independent DGX Spark hosts
     lora:
       # MoE LoRA targets: attention only. MoE expert MLPs would need ESFT-
@@ -78,6 +82,40 @@ models:
       enable_chunked_prefill: true
       # Qwen3 emits internal reasoning tokens; this parser strips them
       # from the streamed response so clients see clean text.
+      reasoning_parser: "qwen3"
+
+  qwen-3.6-35b-a3b-moe-fp8:
+    # FP8-quantized MoE variant — same architecture as the BF16 entry
+    # above, ~half the weight bandwidth on Blackwell. Tracks the
+    # reference repo ZengboJamesWang/dgx-spark-vllm-qwen3.6-35b-a3b-dflash
+    # which sustains ~50 tok/s on identical hardware with this exact
+    # model + flags.
+    hf_id: "Qwen/Qwen3.6-35B-A3B-FP8"
+    arch: "moe"
+    param_count_b: 35.0
+    active_param_count_b: 3.0
+    download_size_gb: 35   # ~half the BF16 size
+    tier: "S"
+    default_for_tier: true
+    tested: false   # promoted to default once Stage 2 validation passes on Spark
+    lora:
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+      rank: 16
+      alpha: 32
+    serving:
+      backend: "vllm"
+      # FP8 weights free up enough headroom to use the model's full
+      # 256K window without memory pressure on Spark unified memory.
+      max_model_len: 262144
+      expert_parallel: true
+      # Reference repo's value (0.45) — works because FP8 weights are
+      # ~22 GiB on-GPU vs ~67 GiB for BF16, leaving plenty of room for
+      # KV cache and agent runtime.
+      gpu_memory_utilization: 0.45
+      tool_call_parser: "qwen3_xml"
+      enable_auto_tool_choice: true
+      enable_prefix_caching: true
+      enable_chunked_prefill: true
       reasoning_parser: "qwen3"
 
   qwen-3.6-27b-dense:
