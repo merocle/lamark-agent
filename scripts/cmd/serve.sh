@@ -72,23 +72,38 @@ print(m.get('default') or '')
 ")"
     [ -n "$model_name" ] || { echo "ERROR: no default model in $HERMES_HOME/config.yaml. Run \`lamark setup\`."; exit 2; }
 
-    # Look up registry entry to get HF id + serving config.
+    # Look up registry entry to get HF id + serving config.  `model.default`
+    # in config.yaml is sometimes the served-model alias (e.g. 'qwen-base')
+    # rather than a registry slug; in that case fall back to the tier-S
+    # default entry rather than crashing with KeyError.
     local registry_json
     registry_json="$(PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" -c "
 import json
-from lamark.registry import get_model
-e = get_model('$model_name')
+from lamark.registry import get_model, load_registry, ModelEntry
+
+name = '$model_name'
+entry = None
+try:
+    entry = get_model(name)
+except Exception:
+    for n, e in load_registry().items():
+        if isinstance(e, ModelEntry) and e.tier == 'S' and e.default_for_tier:
+            entry = e
+            break
+if entry is None:
+    raise SystemExit(f'no registry entry matches model.default={name!r} and no tier-S default available')
+
 print(json.dumps({
-    'hf_id': e.hf_id,
-    'max_model_len': e.serving.max_model_len,
-    'expert_parallel': e.serving.expert_parallel,
-    'tool_call_parser': e.serving.tool_call_parser or '',
-    'gpu_memory_utilization': e.serving.gpu_memory_utilization,
-    'enable_prefix_caching': e.serving.enable_prefix_caching,
-    'enable_chunked_prefill': e.serving.enable_chunked_prefill,
-    'reasoning_parser': e.serving.reasoning_parser or '',
-    'speculative_model': e.serving.speculative_model or '',
-    'num_speculative_tokens': e.serving.num_speculative_tokens,
+    'hf_id': entry.hf_id,
+    'max_model_len': entry.serving.max_model_len,
+    'expert_parallel': entry.serving.expert_parallel,
+    'tool_call_parser': entry.serving.tool_call_parser or '',
+    'gpu_memory_utilization': entry.serving.gpu_memory_utilization,
+    'enable_prefix_caching': entry.serving.enable_prefix_caching,
+    'enable_chunked_prefill': entry.serving.enable_chunked_prefill,
+    'reasoning_parser': entry.serving.reasoning_parser or '',
+    'speculative_model': entry.serving.speculative_model or '',
+    'num_speculative_tokens': entry.serving.num_speculative_tokens,
 }))
 ")"
     local hf_id max_len ep tcp gmu prefix_cache chunked_prefill reasoning spec_model spec_tokens

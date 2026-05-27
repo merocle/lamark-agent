@@ -25,7 +25,8 @@ ADAPTER_DIR="${LAMARK_ADAPTER_DIR:-$LAMARK_HOME/adapters}"
 # perf push), and the trainer must follow the registry-declared default.
 # Override with LAMARK_BASE_MODEL=/abs/path for ad-hoc runs against a
 # non-default model.
-HERMES_HOME_PRE="${HERMES_HOME:-$LAMARK_HOME/hermes-home}"
+export HERMES_HOME_PRE="${HERMES_HOME:-$LAMARK_HOME/hermes-home}"
+export LAMARK_HOME
 if [ -n "${LAMARK_BASE_MODEL:-}" ]; then
     BASE_MODEL_DIR="$LAMARK_BASE_MODEL"
 else
@@ -33,7 +34,7 @@ else
     # the registry slug (preferred) OR a served-model alias like 'qwen-base'
     # that vLLM also responds to but isn't a registry key. Try direct
     # lookup first, then fall back to the tier-S default entry.
-    BASE_MODEL_DIR=$(PYTHONPATH="$REPO/src" "$LAMARK_HOME/venv/bin/python" - <<'PY' 2>/dev/null
+    BASE_MODEL_DIR=$(PYTHONPATH="$REPO/src" "$LAMARK_HOME/venv/bin/python" - <<'PY'
 import os, yaml
 from pathlib import Path
 from lamark.registry import load_registry, get_model, ModelEntry
@@ -62,7 +63,6 @@ PY
     # empty path if both lookups missed (e.g. registry not importable).
     BASE_MODEL_DIR="${BASE_MODEL_DIR:-$LAMARK_HOME/models/hf/Qwen_Qwen3.6-35B-A3B-FP8}"
 fi
-export HERMES_HOME_PRE
 
 LOG_DIR="$LAMARK_HOME/logs"
 mkdir -p "$LOG_DIR" "$ADAPTER_DIR"
@@ -214,6 +214,15 @@ fi
 ADAPTER_NAME="nightly-$TS"
 log "Training adapter $ADAPTER_NAME (this takes 2-10 minutes)..."
 
+# The dispatcher runs INSIDE the container with $LAMARK_HOME mounted at
+# /workspace/.lamark. Translate the host-side BASE_MODEL_DIR (under
+# $LAMARK_HOME on the host) to its corresponding container path. We
+# always derived BASE_MODEL_DIR under $LAMARK_HOME above, so this
+# substitution covers every supported entry from the registry.
+CONTAINER_BASE_MODEL="${BASE_MODEL_DIR/#$LAMARK_HOME/\/workspace\/.lamark}"
+log "Base model (host): $BASE_MODEL_DIR"
+log "Base model (container): $CONTAINER_BASE_MODEL"
+
 # Free the GPU so the training container can fit. We stop the production
 # serve container (lamark-vllm — see scripts/cmd/serve.sh) and remember to
 # restart it via `lamark serve start` once the adapter is saved. Note:
@@ -242,7 +251,7 @@ docker run --rm --name lamark-train-$TS \
   -w /workspace/lamark-agent \
   -e PYTHONPATH=/workspace/lamark-agent/src \
   lamark/vllm:25.10 \
-  bash -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; pip install --no-deps 'torchao>=0.16' 2>&1 | tail -1; python /workspace/lamark-agent/src/lamark/train/dispatcher_spark.py --pairs-jsonl /workspace/.lamark/train-plan-nightly.jsonl --base-model $BASE_MODEL_DIR --adapter-name $ADAPTER_NAME --lora-rank 16 --num-epochs 5 --learning-rate 2e-4 --per-device-batch-size 1 --grad-accum-steps 4 --output-dir /workspace/adapters" \
+  bash -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; pip install --no-deps 'torchao>=0.16' 2>&1 | tail -1; python /workspace/lamark-agent/src/lamark/train/dispatcher_spark.py --pairs-jsonl /workspace/.lamark/train-plan-nightly.jsonl --base-model $CONTAINER_BASE_MODEL --adapter-name $ADAPTER_NAME --lora-rank 16 --num-epochs 5 --learning-rate 2e-4 --per-device-batch-size 1 --grad-accum-steps 4 --output-dir /workspace/adapters" \
   >> "$LOG" 2>&1 || fail "training container exited non-zero"
 
 if [ ! -f "$ADAPTER_DIR/$ADAPTER_NAME/adapter_model.safetensors" ]; then
