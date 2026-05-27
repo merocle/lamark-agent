@@ -65,50 +65,64 @@ fi
 # through to the gateway daemon. `custom` reads base_url directly from
 # this file on every API call, and the endpoint appears in `/model`
 # pickers under Custom Models.
+#
+# Model-name convention: `model.default` is the registry slug (so serve.sh
+# can look up the matching ServingConfig). vLLM is configured to serve
+# the model under BOTH the registry slug and the historical `qwen-base`
+# alias (see --served-model-name in scripts/cmd/serve.sh) so existing
+# clients pinned to `qwen-base` keep working through a base swap.
 "$VENV_PY" -c "
 import yaml
 from pathlib import Path
 
-# vLLM serves the model under the registry name on Spark, but the served
-# alias is 'qwen-base' (see scripts/cmd/serve.sh --served-model-name).
-# Clients call by the served name, so the alias and custom_provider
-# model entry should both be 'qwen-base', while the user-facing
-# default in config remains the human-readable registry slug.
-SERVED_NAME = 'qwen-base'
+MODEL_NAME = '$MODEL_NAME'
+LEGACY_ALIAS = 'qwen-base'
+BASE_URL = 'http://127.0.0.1:8000/v1'
+
+# vLLM defaults max_model_len from the model config; pull the registry's
+# value so the custom_provider entry advertises a context window the
+# server can actually honor.
+import sys
+sys.path.insert(0, r'$LAMARK_REPO/src')
+from lamark.registry import get_model
+entry = get_model(MODEL_NAME)
+context_length = entry.serving.max_model_len
 
 p = Path(r'$HERMES_HOME/config.yaml')
 cfg = yaml.safe_load(p.read_text()) if p.is_file() else {}
 
 cfg.setdefault('model', {})
-cfg['model']['default'] = SERVED_NAME
+cfg['model']['default'] = MODEL_NAME
 cfg['model']['provider'] = 'custom'
-cfg['model']['base_url'] = 'http://127.0.0.1:8000/v1'
+cfg['model']['base_url'] = BASE_URL
 
-# Rebuild model_aliases — drop any prior lm-studio aliases for our model.
+# Rebuild model_aliases — registry slug primary, legacy alias for
+# clients still calling 'qwen-base'.
 aliases = cfg.setdefault('model_aliases', {})
-aliases[SERVED_NAME] = {
-    'model': SERVED_NAME,
-    'provider': 'custom',
-    'base_url': 'http://127.0.0.1:8000/v1',
-}
+for nm in (MODEL_NAME, LEGACY_ALIAS):
+    aliases[nm] = {
+        'model': nm,
+        'provider': 'custom',
+        'base_url': BASE_URL,
+    }
 
 # Rebuild custom_providers — keep any non-Lamark entries the user added,
-# replace the Lamark one (matched by base_url pointing at our vLLM).
+# replace the Lamark one with both names advertised so /model picker
+# shows the current registry slug.
 existing = cfg.get('custom_providers') or []
 keep = [
-    p for p in existing
-    if isinstance(p, dict)
-    and 'lamark' not in (p.get('name') or '').lower()
+    pr for pr in existing
+    if isinstance(pr, dict)
+    and 'lamark' not in (pr.get('name') or '').lower()
 ]
 keep.insert(0, {
     'name': 'lamark-local',
-    'base_url': 'http://127.0.0.1:8000/v1',
+    'base_url': BASE_URL,
     'api_key': 'not-needed',
-    'models': [{
-        'name': SERVED_NAME,
-        'context_length': 131072,
-        'transport': 'openai_chat',
-    }],
+    'models': [
+        {'name': MODEL_NAME, 'context_length': context_length, 'transport': 'openai_chat'},
+        {'name': LEGACY_ALIAS, 'context_length': context_length, 'transport': 'openai_chat'},
+    ],
 })
 cfg['custom_providers'] = keep
 
