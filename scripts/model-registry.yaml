@@ -117,6 +117,14 @@ models:
       enable_prefix_caching: true
       enable_chunked_prefill: true
       reasoning_parser: "qwen3"
+      # DFlash speculative decoding. The draft model
+      # (z-lab/Qwen3.6-35B-A3B-DFlash, 0.5B block-diffusion drafter)
+      # is trained to mimic the vanilla base — high acceptance rate
+      # without LoRA adapters, lower rate proportional to LoRA-induced
+      # distribution shift if/when Phase 2 LoRA ships. Verified in
+      # vLLM v0.21.0 (vllm/v1/spec_decode/dflash.py).
+      speculative_model: "z-lab/Qwen3.6-35B-A3B-DFlash"
+      num_speculative_tokens: 15
 
   qwen-3.6-27b-dense:
     hf_id: "Qwen/Qwen3.6-27B"

@@ -87,9 +87,11 @@ print(json.dumps({
     'enable_prefix_caching': e.serving.enable_prefix_caching,
     'enable_chunked_prefill': e.serving.enable_chunked_prefill,
     'reasoning_parser': e.serving.reasoning_parser or '',
+    'speculative_model': e.serving.speculative_model or '',
+    'num_speculative_tokens': e.serving.num_speculative_tokens,
 }))
 ")"
-    local hf_id max_len ep tcp gmu prefix_cache chunked_prefill reasoning
+    local hf_id max_len ep tcp gmu prefix_cache chunked_prefill reasoning spec_model spec_tokens
     hf_id="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['hf_id'])")"
     max_len="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['max_model_len'])")"
     ep="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['expert_parallel'])")"
@@ -98,6 +100,8 @@ print(json.dumps({
     prefix_cache="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['enable_prefix_caching'])")"
     chunked_prefill="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['enable_chunked_prefill'])")"
     reasoning="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['reasoning_parser'])")"
+    spec_model="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['speculative_model'])")"
+    spec_tokens="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['num_speculative_tokens'])")"
     local local_dir="$LAMARK_HOME/models/hf/$(echo "$hf_id" | tr '/' '_')"
     [ -d "$local_dir" ] || { echo "ERROR: model not downloaded at $local_dir. Run \`lamark setup\`."; exit 3; }
 
@@ -134,6 +138,24 @@ print(json.dumps({
     fi
     if [ -n "$reasoning" ] && [ "$reasoning" != "None" ]; then
         perf_flags="$perf_flags --reasoning-parser $reasoning"
+    fi
+
+    # Optional speculative decoding (DFlash). The draft model is downloaded
+    # by switch-base.sh/setup.sh into the same models/hf tree as the base,
+    # so we map host → container path the same way.  vLLM accepts a JSON
+    # blob as the --speculative-config value; we single-quote it inside
+    # the outer double-quoted -c string so the JSON's own double quotes
+    # survive both bash layers.
+    local spec_flag=""
+    if [ -n "$spec_model" ] && [ "$spec_model" != "None" ] && [ "$spec_model" != "" ]; then
+        local spec_flat_id; spec_flat_id="$(echo "$spec_model" | tr '/' '_')"
+        local spec_container_dir="/lamark/models/hf/$spec_flat_id"
+        # Acceptance-rate caveat: when LoRA adapters are present we still
+        # launch with DFlash, but spec-decode + LoRA has known config
+        # quirks (vLLM #41523). Adapters are loaded conditionally above;
+        # if they break the runtime, remove them and the spec_flag will
+        # still keep working stand-alone.
+        spec_flag="--speculative-config '{\"method\":\"dflash\",\"model\":\"$spec_container_dir\",\"num_speculative_tokens\":$spec_tokens}'"
     fi
 
     # LoRA adapter discovery: every subdir of $LAMARK_HOME/adapters/ with an
@@ -190,7 +212,7 @@ print(json.dumps({
         -w /lamark \
         --entrypoint /bin/bash \
         "$image" \
-        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name $model_name qwen-base $tcp_flag $perf_flags $tpl_flag $lora_flags" \
+        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name $model_name qwen-base $tcp_flag $perf_flags $spec_flag $tpl_flag $lora_flags" \
         > "$LOG_FILE" 2>&1
 
     echo "Container started. Tail log: lamark logs vllm"

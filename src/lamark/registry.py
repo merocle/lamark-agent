@@ -44,6 +44,14 @@ class ServingConfig:
     enable_prefix_caching: bool = False
     enable_chunked_prefill: bool = False
     reasoning_parser: Optional[str] = None
+    # Speculative decoding via DFlash (or compatible drafter). When set,
+    # vLLM is launched with --speculative-config pointing at the draft
+    # model. The drafter proposes `num_speculative_tokens` tokens per
+    # step, target model verifies. Acceptance rate degrades with LoRA
+    # adapters that shift the target distribution away from the
+    # drafter's training distribution — see plan notes.
+    speculative_model: Optional[str] = None
+    num_speculative_tokens: int = 15
 
 
 @dataclass
@@ -117,6 +125,8 @@ def load_registry(path: Optional[Path] = None) -> dict[str, ModelEntry | TierSpe
                 enable_prefix_caching=bool(serving.get("enable_prefix_caching", False)),
                 enable_chunked_prefill=bool(serving.get("enable_chunked_prefill", False)),
                 reasoning_parser=serving.get("reasoning_parser"),
+                speculative_model=serving.get("speculative_model"),
+                num_speculative_tokens=int(serving.get("num_speculative_tokens", 15)),
             ),
         )
 

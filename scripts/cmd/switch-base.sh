@@ -59,6 +59,28 @@ if [ -f "$DOWNLOAD_DIR/chat_template.jinja" ] && [ ! -f "$DOWNLOAD_DIR/lamark_ch
         --output "$DOWNLOAD_DIR/lamark_chat_template.jinja"
 fi
 
+# If the registry pairs this base with a speculative-decoding draft
+# model (DFlash), pull it into the same models/hf tree. ~1 GiB for the
+# Qwen3.6-DFlash drafter, small enough to be a no-op for users who don't
+# end up enabling spec-decode at serve time.
+SPEC_MODEL=$(PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" -c "
+from lamark.registry import get_model
+e = get_model('$MODEL_NAME')
+print(e.serving.speculative_model or '')
+" 2>/dev/null)
+if [ -n "$SPEC_MODEL" ]; then
+    SPEC_DIR="$LAMARK_HOME/models/hf/$(echo "$SPEC_MODEL" | tr '/' '_')"
+    if [ ! -f "$SPEC_DIR/config.json" ]; then
+        echo "Downloading speculative draft model $SPEC_MODEL ..."
+        "$VENV_PY" -c "
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id='$SPEC_MODEL', local_dir=r'$SPEC_DIR', max_workers=8)
+"
+    else
+        echo "Draft model $SPEC_MODEL already on disk."
+    fi
+fi
+
 # Update config.yaml — change default model + alias + custom_providers entry.
 # Uses the `custom` provider (not `lm-studio`): the latter has a hardcoded
 # fallback base_url that breaks when env vars aren't perfectly threaded
