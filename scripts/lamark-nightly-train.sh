@@ -273,14 +273,30 @@ log "Adapter saved: $ADAPTER_DIR/$ADAPTER_NAME"
 # just have to bounce the container and the fresh adapter is loaded.
 log "Restarting vLLM via \`lamark serve start\` (auto-loads new adapter)..."
 "$REPO/scripts/cmd/serve.sh" start >> "$LOG" 2>&1 || true
-# Warm-up: model load + CUDA graph compile takes 3-7 min on Spark.
-for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
-    if curl -fsS -m 3 "$VLLM_BASE_URL/models" >/dev/null 2>&1; then
-        log "vLLM ready after ${i}0s"
+
+# Warm-up wait: BF16 model load + CUDA graph compile + LoRA attach takes
+# 8-12 min on Spark (FP8 model + LoRA + Mamba prefix-cache validation).
+# Plain /v1/models becomes reachable BEFORE the engine can actually
+# serve a chat completion — we saw the prior run's eval-gate get
+# "Connection reset by peer" on every probe because it fired against a
+# half-loaded server. Probe with a tiny actual completion request
+# (max_tokens=1) so the engine has to be wired through.
+log "Waiting for vLLM to serve a real completion (up to 20 min)..."
+READY_PROBE='{"model":"qwen-base","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
+READY=0
+for i in $(seq 1 40); do  # 40 × 30s = 20 min cap
+    if curl -fsS -m 5 -H "Content-Type: application/json" \
+           -d "$READY_PROBE" \
+           "$VLLM_BASE_URL/chat/completions" >/dev/null 2>&1; then
+        log "vLLM ready (chat completion succeeded) after $((i*30))s"
+        READY=1
         break
     fi
     sleep 30
 done
+if [ "$READY" = "0" ]; then
+    log "WARN: vLLM did not become ready within 20 min — eval-gate will likely fail."
+fi
 
 # --- 4. Eval-gate ----------------------------------------------------------
 log "Running eval-gate against $ADAPTER_NAME..."
