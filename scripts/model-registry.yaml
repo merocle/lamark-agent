@@ -104,9 +104,11 @@ models:
       alpha: 32
     serving:
       backend: "vllm"
-      # FP8 weights free up enough headroom to use the model's full
-      # 256K window without memory pressure on Spark unified memory.
-      max_model_len: 262144
+      # 131072 (128K) — kept conservative even though FP8 alone has
+      # room for the full 262144 window. Leaves enough KV-cache budget
+      # to optionally re-enable DFlash drafter without re-tuning, and
+      # 128K is plenty for personal-agent chat sessions in practice.
+      max_model_len: 131072
       expert_parallel: true
       # Reference repo's value (0.45) — works because FP8 weights are
       # ~22 GiB on-GPU vs ~67 GiB for BF16, leaving plenty of room for
@@ -117,14 +119,30 @@ models:
       enable_prefix_caching: true
       enable_chunked_prefill: true
       reasoning_parser: "qwen3"
-      # DFlash speculative decoding. The draft model
-      # (z-lab/Qwen3.6-35B-A3B-DFlash, 0.5B block-diffusion drafter)
-      # is trained to mimic the vanilla base — high acceptance rate
-      # without LoRA adapters, lower rate proportional to LoRA-induced
-      # distribution shift if/when Phase 2 LoRA ships. Verified in
-      # vLLM v0.21.0 (vllm/v1/spec_decode/dflash.py).
-      speculative_model: "z-lab/Qwen3.6-35B-A3B-DFlash"
-      num_speculative_tokens: 15
+      # DFlash speculative decoding is plumbed end-to-end but disabled
+      # by default after benchmarking on Spark showed it NET-NEGATIVE
+      # on single-user serial workloads:
+      #
+      #   FP8 alone:               52 tok/s sustained
+      #   FP8 + DFlash (spec=5):   48 tok/s  (peak 58, but unstable)
+      #   FP8 + DFlash (spec=8):   47 tok/s  (peak 55, similar)
+      #
+      # Why: spec-decode amortizes draft overhead across batched
+      # requests. With batch=1 (one chat user at a time), each decode
+      # step pays draft+verify cost for a single stream. Acceptance
+      # rate variance per prompt also widens the run-to-run spread.
+      # The reference repo's "~50 tok/s" headline matches our FP8-alone
+      # number — their README clarifies DFlash is "configured but
+      # currently requires a vLLM build with DFlash support" (it's in
+      # vLLM v0.21.0, but their benchmarks predate that).
+      #
+      # To re-enable when load profile changes (multiple concurrent
+      # users, or vLLM ships a DFlash perf fix), uncomment below and
+      # `lamark serve restart`. switch-base.sh already auto-downloads
+      # the draft model so the only flip is here.
+      #
+      # speculative_model: "z-lab/Qwen3.6-35B-A3B-DFlash"
+      # num_speculative_tokens: 8
 
   qwen-3.6-27b-dense:
     hf_id: "Qwen/Qwen3.6-27B"
