@@ -1,14 +1,8 @@
 # Lamark — Deep Specification
 
-> Self-improving local agent. Rust runtime forked in spirit from Hermes-Agent,
-> Claude-Code-style scaffolding, Codex-style trace bundles + provider trait,
-> integrated with sibling `knowledge-base` for canonical memory + dataset
-> storage. Nemotron/Qwen training cadence.
+> Self-improving local agent. Rust runtime (`agent/`), Python training pipeline (`learning/`), knowledge-base service (`../knowledge-base`) as the system of record.
 
 **Status:** Draft v0.2 — 2026-05-24
-**Reference clones:** `~/.cache/lamark/vendor/{hermes-agent,claude-code,codex}`
-**Sibling project:** `../knowledge-base` (Kotlin/Spring; Postgres + pgvector + KG + RAPTOR; exposes `/knowledge /search /graph /memory /agents` API)
-**Python training pipeline:** `learning/` (LoRA fine-tuning via PEFT/TRL/Unsloth; see `learning/pyproject.toml`)
 
 > See [`docs/plan/`](./docs/plan/) for the layer-by-layer Rust translation plan.
 
@@ -177,7 +171,7 @@ Coupling: agent → trace files on disk; agent ↔ knowledge-base over HTTP; tra
 
 ## 6. Runtime layers (Rust)
 
-The runtime is sliced into seven layers. Each has its own plan file in [`docs/plan/`](./docs/plan/).
+The runtime is sliced into eight layers. Each has its own plan file in [`docs/plan/`](./docs/plan/).
 
 | # | Layer | Plan file | One-liner |
 |---|---|---|---|
@@ -186,7 +180,8 @@ The runtime is sliced into seven layers. Each has its own plan file in [`docs/pl
 | 3 | **Providers** | `docs/plan/04-layer-3-providers.md` | `ModelProvider` trait; OpenAI-compat, Anthropic-compat (with `cache_control`), Bedrock, local-streaming. |
 | 4 | **Agent core** — turn loop, SQ/EQ, tools, environments | `docs/plan/05-layer-4-agent-core.md` | The heart. Codex-style event protocol. |
 | 5 | **Hooks + trace recorder** | `docs/plan/06-layer-5-hooks-trace.md` | Single bus drives recorder + gateway + UI + custom hooks. |
-| 6 | **Prompt + cache + memory + knowledge-base** | `docs/plan/07-layer-6-prompt-cache-memory.md` | Composer, cache-control, external memory trait, knowledge-base HTTP client. |
+| 6 | **Prompt + cache** | `docs/plan/07-layer-6-prompt-and-cache.md` | Hierarchical prompt composer + cache strategies. |
+| 6a | **Memory + knowledge-base** | `docs/plan/07a-layer-6-memory-and-kb.md` | Memory providers (KB default + Honcho/Mem0/Hindsight/SQLite); KB client. |
 | 7 | **Skills + plugins + Curator** | `docs/plan/08-layer-7-skills-plugins-curator.md` | Markdown skills, dynamic plugins (WASM + dylib), Curator background agent. |
 | 8 | **Gateway + MCP + ACP + integrations** | `docs/plan/09-layer-8-gateway-integrations.md` | Long-running messaging gateway; MCP client+server; ACP. |
 
@@ -344,7 +339,7 @@ learning:
 
 ---
 
-## 9. Training pipeline (unchanged from v0.1; restated)
+## 9. Training pipeline
 
 Sources (per setup-guide §3.1):
 
@@ -360,7 +355,7 @@ Curation (post-redaction only): OSS-Instruct seeding + two-judge consensus + exe
 
 Quality: perplexity outlier, MinHash dedup, 13-gram decontamination against canonical eval sets, language balance, length cap, residual-PII rescan.
 
-**Blend (the 70/20/10/5 rule from setup-guide §3.5):**
+**Blend (70/20/10/5 rule):**
 
 | Bucket | Share | Source | Notes |
 |---|---|---|---|
@@ -400,28 +395,27 @@ bonferroni_correction: true
 
 ## 10. Security posture
 
-- **Default execution backend = `local` (dev tier); `kubernetes` is the recommended production tier.** Lamark trades container-by-default for a permission-first policy: every shell- and write-class tool gates on `Decision::Prompt` unless an explicit allowlist entry says otherwise. Hermes's failure mode was ALLOW-ALL on the policy layer (Issue #7826), not the absence of a container; Lamark fixes the policy layer (see `docs/plan/05c §"PermissionRequest"`, policy DSL in `lamark/policy.toml`) and leaves the sandbox choice to the operator.
+- **Default execution backend = `local` (dev tier); `kubernetes` is the recommended production tier.** Lamark trades container-by-default for a permission-first policy: every shell- and write-class tool gates on `Decision::Prompt` unless an explicit allowlist entry says otherwise. Hermes's failure mode was ALLOW-ALL on the policy layer (Issue #7826), not the absence of a container; Lamark fixes the policy layer (see `docs/plan/05c §"PermissionRequest"`, policy DSL in `agent/crates/lamark/policy.toml`) and leaves the sandbox choice to the operator.
   - **Try / dev:** `local` — fastest path, no infra. Permission-first policy is the safety layer.
   - **Single-host prod / air-gapped:** `docker` — container-per-session, egress allowlist via sidecar proxy.
   - **Multi-tenant production / horizontal scale:** `kubernetes` — Pod-per-subagent, NetworkPolicy egress, namespace-scoped RBAC, declarative resource quotas. See [`docs/plan/05d`](./docs/plan/05d-sandbox-config-examples.md) for the production manifest.
   - **Build-server ops:** `ssh` — works for operator-managed hosts; cannot enforce egress (caveat).
   - Switch via `lamark config set sandbox.default <name>` or per-invocation `--sandbox <name>`.
-- **Hook approval chain**: every shell-class / write-class tool fires `PermissionRequest`; default policy is `prompt`; declarative `Allow|Prompt|Forbidden` rules in `lamark/policy.toml`.
+- **Hook approval chain**: every shell-class / write-class tool fires `PermissionRequest`; default policy is `prompt`; declarative `Allow|Prompt|Forbidden` rules in `agent/crates/lamark/policy.toml`.
 - **Trace redaction**: pre-storage hook can redact inline (opt-in); the dataset pipeline always re-runs Stage 1 + Stage 2 before any frontier-model curation.
 - **Knowledge-base auth**: bearer token in `KB_TOKEN`; per-project ACL via knowledge-base's RBAC (it ships with auth/RBAC service — see its §4.1).
 - **Consent**: `learning.consent_required=true` for any multi-user install; per-session `~/.lamark/no-collect` opt-out.
 
 ---
 
-## 11. Open questions (must answer before P0 closes)
+## 11. Open questions
 
 1. **Hardware target** — DGX Spark, single 24 GB consumer GPU, M3 Pro Mac Studio, or remote 80 GB box over SSH?
 2. **Trace consent UX** — silent capture with off-switch, or explicit opt-in per session?
 3. **First base model** — Qwen3.6-35B-A3B / Gemma4-27B / Nemotron-3-Nano-30B-A3B?
 4. **Frontier teacher budget** — Claude + GPT + Gemini API spend in month 1, or skip OSS-Instruct expansion?
 5. **knowledge-base contract pin** — which version of `../knowledge-base/docs/07b-public-api-rfc.md` are we coding against? (Capture a hash; coordinate with the knowledge-base team on breaking changes.)
-6. **Rust crate flavor for FFI** — PyO3 vs subprocess for the Python training-pipeline boundary?
-7. **Plugin host** — WASM-only (safer), dylib-only (faster), or both? (See `docs/plan/08-layer-7-skills-plugins-curator.md`.)
+6. **Plugin host** — WASM-only (safer), dylib-only (faster), or both? (See `docs/plan/08-layer-7-skills-plugins-curator.md`.)
 
 ---
 
@@ -441,17 +435,17 @@ bonferroni_correction: true
 |---|---|
 | [`docs/plan/00-overview.md`](./docs/plan/00-overview.md) | Index, phase ordering, definition of done. |
 | [`docs/plan/00b-ideology-and-feature-matrix.md`](./docs/plan/00b-ideology-and-feature-matrix.md) | Hermes-vs-Claude-Code ideology comparison; which DNA we adopt; feature matrix. |
-| [`docs/plan/00c-hermes-deepdive-addendum.md`](./docs/plan/00c-hermes-deepdive-addendum.md) | Post-investigation refinements (2026-05-25): hermes-agent contract details + Claude-Code/Codex tightenings folded into layers 4–9. Read after the layer files; supersedes ambiguous details. |
-| [`docs/plan/00d-claude-code-deepdive-addendum.md`](./docs/plan/00d-claude-code-deepdive-addendum.md) | Companion to 00c (2026-05-25): Claude-Code deep-dive — full hook taxonomy + 4 subtypes + JSON I/O protocol, slash-command discriminated union, vim mode, diff cache, three-tier skill discovery, plugin record, coordinator pattern, memdir format, AppState, idempotent migrations, Task vs Tool, upstream-proxy, Dream. |
+| [`docs/plan/00c-hermes-deepdive-addendum.md`](./docs/plan/00c-hermes-deepdive-addendum.md) | Post-investigation refinements: hermes-agent contract details + Claude-Code/Codex tightenings folded into layers 4–9. |
+| [`docs/plan/00d-claude-code-deepdive-addendum.md`](./docs/plan/00d-claude-code-deepdive-addendum.md) | Claude-Code deep-dive — full hook taxonomy, slash-command union, vim mode, diff cache, skill discovery, plugin record, coordinator pattern. |
 | [`docs/plan/01-rust-strategy.md`](./docs/plan/01-rust-strategy.md) | Pure-Rust day 1; cargo workspace; deps; phase plan. |
 | [`docs/plan/02-layer-1-entry-cli.md`](./docs/plan/02-layer-1-entry-cli.md) | CLI binary, subcommands, ratatui TUI, slash-command registry. |
 | [`docs/plan/03-layer-2-config-bootstrap.md`](./docs/plan/03-layer-2-config-bootstrap.md) | Layered config, env, secrets, bootstrap. |
 | [`docs/plan/04-layer-3-providers.md`](./docs/plan/04-layer-3-providers.md) | `ModelProvider` trait, streaming, cache_control, tool-call parsers. |
 | [`docs/plan/05-layer-4-agent-core.md`](./docs/plan/05-layer-4-agent-core.md) | Turn loop, SQ/EQ, tool dispatch, env backends. |
 | [`docs/plan/05a-coordinator-multi-agent.md`](./docs/plan/05a-coordinator-multi-agent.md) | Coordinator + multi-agent Kanban protocol + /goal Ralph loop + subagents. |
-| [`docs/plan/05b-tasks-and-kanban.md`](./docs/plan/05b-tasks-and-kanban.md) | Three task layers (session tasks → coordinator Kanban → KB project boards); promotion ladder; training signals. |
-| [`docs/plan/05c-sandbox-and-agent-hosting.md`](./docs/plan/05c-sandbox-and-agent-hosting.md) | `Sandbox` trait + in-tree backends (Local / Docker / SSH / Kubernetes); agent hosting; egress policy; trace pull-back. |
-| [`docs/plan/05d-sandbox-config-examples.md`](./docs/plan/05d-sandbox-config-examples.md) | Worked YAML configs for every sandbox backend (minimum + recommended); Kubernetes cluster manifests; dev→staging→prod profile example. |
+| [`docs/plan/05b-tasks-and-kanban.md`](./docs/plan/05b-tasks-and-kanban.md) | Three task layers; promotion ladder; training signals. |
+| [`docs/plan/05c-sandbox-and-agent-hosting.md`](./docs/plan/05c-sandbox-and-agent-hosting.md) | `Sandbox` trait + in-tree backends; agent hosting; egress policy; trace pull-back. |
+| [`docs/plan/05d-sandbox-config-examples.md`](./docs/plan/05d-sandbox-config-examples.md) | Worked YAML configs for every sandbox backend; Kubernetes cluster manifests. |
 | [`docs/plan/06-layer-5-hooks-trace.md`](./docs/plan/06-layer-5-hooks-trace.md) | Hook bus, trace recorder, reducer, KB sync. |
 | [`docs/plan/07-layer-6-prompt-and-cache.md`](./docs/plan/07-layer-6-prompt-and-cache.md) | Hierarchical prompt composer + cache strategies. |
 | [`docs/plan/07a-layer-6-memory-and-kb.md`](./docs/plan/07a-layer-6-memory-and-kb.md) | Memory providers (KB default + Honcho/Mem0/Hindsight/SQLite); KB client. |
