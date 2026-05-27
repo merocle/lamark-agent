@@ -2195,6 +2195,8 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
+EnvironmentFile=-{hermes_home}/.env
+EnvironmentFile=-{hermes_home}/env
 Restart=always
 RestartSec=5
 RestartMaxDelaySec=300
@@ -2217,6 +2219,13 @@ WantedBy=multi-user.target
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
+    # LAMARK-PATCH A.8: read $HERMES_HOME/.env (KEY=VAL lines, systemd-style)
+    # so secrets like TELEGRAM_BOT_TOKEN reach the gateway daemon without
+    # being committed to the unit file itself. Mirrors A.7's launchd
+    # plist EnvironmentVariables injection. The legacy `env` file (bash
+    # `export KEY=VAL` syntax) is also referenced for back-compat — systemd
+    # emits a benign warning about "invalid environment assignment" for
+    # those `export` lines but skips them rather than failing, so it's safe.
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2230,6 +2239,8 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
+EnvironmentFile=-{hermes_home}/.env
+EnvironmentFile=-{hermes_home}/env
 Restart=always
 RestartSec=5
 RestartMaxDelaySec=300
