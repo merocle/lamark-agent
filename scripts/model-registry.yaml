@@ -143,6 +143,12 @@ models:
       #
       # speculative_model: "z-lab/Qwen3.6-35B-A3B-DFlash"
       # num_speculative_tokens: 8
+      # HF Transformers refuses to fine-tune FP8-quantized weights
+      # (`QuantizationMethod.FP8 ... do not support training`), so the
+      # nightly trainer falls back to the matched BF16 entry below.
+      # The serving stack stays on FP8; only the train path swaps in
+      # the heavier base for the few minutes it runs.
+      train_with: "qwen-3.6-35b-a3b-moe"
 
   qwen-3.6-27b-dense:
     hf_id: "Qwen/Qwen3.6-27B"

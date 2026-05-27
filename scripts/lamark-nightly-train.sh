@@ -30,13 +30,15 @@ export LAMARK_HOME
 if [ -n "${LAMARK_BASE_MODEL:-}" ]; then
     BASE_MODEL_DIR="$LAMARK_BASE_MODEL"
 else
-    # Resolve base via the registry. `model.default` in config.yaml may be
-    # the registry slug (preferred) OR a served-model alias like 'qwen-base'
-    # that vLLM also responds to but isn't a registry key. Try direct
-    # lookup first, then fall back to the tier-S default entry.
+    # Resolve the training base via the registry. The serving stack may
+    # be running a quantized model (FP8 / INT4) but HF Transformers
+    # refuses to fine-tune those — see the ValueError on
+    # QuantizationMethod.FP8. Each entry can declare `train_with:` to
+    # point at a sibling registry entry whose hf_id we use instead.
+    # `model.default` in config.yaml may be the registry slug or a
+    # served-model alias; on KeyError, fall back to the tier-S default.
     BASE_MODEL_DIR=$(PYTHONPATH="$REPO/src" "$LAMARK_HOME/venv/bin/python" - <<'PY'
 import os, yaml
-from pathlib import Path
 from lamark.registry import load_registry, get_model, ModelEntry
 
 lamark_home = os.environ["LAMARK_HOME"]
@@ -48,20 +50,26 @@ entry = None
 try:
     entry = get_model(name)
 except Exception:
-    # Fall back: pick the tier-S default model from the registry.
     for n, e in load_registry().items():
         if isinstance(e, ModelEntry) and e.tier == "S" and e.default_for_tier:
             entry = e
             break
+
+# If the resolved entry declares a sibling training base (e.g. FP8 →
+# BF16), prefer that. Otherwise train against the entry's own weights.
+if entry is not None and entry.serving.train_with:
+    try:
+        train_entry = get_model(entry.serving.train_with)
+        entry = train_entry
+    except Exception:
+        pass  # fall through to entry itself
 
 if entry is not None:
     flat = entry.hf_id.replace("/", "_")
     print(f"{lamark_home}/models/hf/{flat}")
 PY
 )
-    # Last-resort safety net so the trainer doesn't fail to start with an
-    # empty path if both lookups missed (e.g. registry not importable).
-    BASE_MODEL_DIR="${BASE_MODEL_DIR:-$LAMARK_HOME/models/hf/Qwen_Qwen3.6-35B-A3B-FP8}"
+    BASE_MODEL_DIR="${BASE_MODEL_DIR:-$LAMARK_HOME/models/hf/Qwen_Qwen3.6-35B-A3B}"
 fi
 
 LOG_DIR="$LAMARK_HOME/logs"

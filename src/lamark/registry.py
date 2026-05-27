@@ -52,6 +52,12 @@ class ServingConfig:
     # drafter's training distribution — see plan notes.
     speculative_model: Optional[str] = None
     num_speculative_tokens: int = 15
+    # Name of a sibling registry entry to use as the FINE-TUNE base when
+    # this model is FP8/INT4-quantized (HuggingFace Transformers refuses
+    # to fine-tune FP8-quantized models — see ValueError on
+    # QuantizationMethod.FP8). For BF16/FP16 entries leave unset; the
+    # trainer falls back to the registry's own hf_id.
+    train_with: Optional[str] = None
 
 
 @dataclass
@@ -127,6 +133,7 @@ def load_registry(path: Optional[Path] = None) -> dict[str, ModelEntry | TierSpe
                 reasoning_parser=serving.get("reasoning_parser"),
                 speculative_model=serving.get("speculative_model"),
                 num_speculative_tokens=int(serving.get("num_speculative_tokens", 15)),
+                train_with=serving.get("train_with"),
             ),
         )
 
