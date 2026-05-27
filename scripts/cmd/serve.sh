@@ -142,20 +142,33 @@ print(json.dumps({
 
     # Optional speculative decoding (DFlash). The draft model is downloaded
     # by switch-base.sh/setup.sh into the same models/hf tree as the base,
-    # so we map host → container path the same way.  vLLM accepts a JSON
+    # so we map host → container path the same way. vLLM accepts a JSON
     # blob as the --speculative-config value; we single-quote it inside
     # the outer double-quoted -c string so the JSON's own double quotes
     # survive both bash layers.
+    #
+    # Also pin --max-num-batched-tokens explicitly when spec-decode is
+    # on. vLLM's automatic compute of max_num_scheduled_tokens collapses
+    # to 1024 once draft slots eat into the chunked-prefill default,
+    # which turns into the warning:
+    #
+    #   "max_num_scheduled_tokens is set to 1024 ... This may lead to
+    #    suboptimal performance."
+    #
+    # Observed on Spark: without this pin, DFlash made throughput WORSE
+    # than plain FP8 (~48 vs ~52 tok/s) because draft overhead wasn't
+    # amortized over enough scheduled tokens. 16384 gives the scheduler
+    # plenty of headroom with num_speculative_tokens ≤ ~10.
+    #
+    # LoRA caveat: when LoRA adapters are present we still launch with
+    # DFlash, but spec-decode + LoRA has known config conflicts (vLLM
+    # #41523). Adapters are loaded conditionally above; if they break
+    # the runtime, remove the adapters and the spec_flag still works.
     local spec_flag=""
     if [ -n "$spec_model" ] && [ "$spec_model" != "None" ] && [ "$spec_model" != "" ]; then
         local spec_flat_id; spec_flat_id="$(echo "$spec_model" | tr '/' '_')"
         local spec_container_dir="/lamark/models/hf/$spec_flat_id"
-        # Acceptance-rate caveat: when LoRA adapters are present we still
-        # launch with DFlash, but spec-decode + LoRA has known config
-        # quirks (vLLM #41523). Adapters are loaded conditionally above;
-        # if they break the runtime, remove them and the spec_flag will
-        # still keep working stand-alone.
-        spec_flag="--speculative-config '{\"method\":\"dflash\",\"model\":\"$spec_container_dir\",\"num_speculative_tokens\":$spec_tokens}'"
+        spec_flag="--speculative-config '{\"method\":\"dflash\",\"model\":\"$spec_container_dir\",\"num_speculative_tokens\":$spec_tokens}' --max-num-batched-tokens 16384"
     fi
 
     # LoRA adapter discovery: every subdir of $LAMARK_HOME/adapters/ with an
