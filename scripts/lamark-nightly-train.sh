@@ -70,7 +70,62 @@ TS=$(date -u +%Y%m%dT%H%M%SZ)
 LOG="$LOG_DIR/nightly-train-$TS.log"
 
 log()  { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG"; }
-fail() { log "FAIL: $*"; exit 1; }
+fail() { log "FAIL: $*"; notify_failure "$1"; exit 1; }
+
+# Send a Telegram message to the bot owner. Uses the same bot token the
+# gateway polls with, plus TELEGRAM_HOME_CHANNEL (the owner's chat_id —
+# already populated by the gateway setup wizard). Pure HTTPS POST, no
+# Hermes import required, so the trainer doesn't have to share venv
+# state with the running daemon.
+#
+# All notification failures are SILENT — we never let a failed Telegram
+# call break the training pipeline.
+notify_user() {
+    # Sends one Telegram message in HTML parse mode (more forgiving than
+    # Markdown for content with underscores in identifiers / paths).
+    local body="$1"
+    local token chat_id env_file="${HERMES_HOME:-$LAMARK_HOME/hermes-home}/.env"
+    [ -f "$env_file" ] || return 0
+    token=$(grep -E '^TELEGRAM_BOT_TOKEN=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+    chat_id=$(grep -E '^TELEGRAM_HOME_CHANNEL=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+    [ -n "$token" ] && [ -n "$chat_id" ] || return 0
+    curl -sS --max-time 10 "https://api.telegram.org/bot$token/sendMessage" \
+        -d "chat_id=$chat_id" \
+        -d "parse_mode=HTML" \
+        --data-urlencode "text=$body" \
+        >> "$LOG" 2>&1 || true
+}
+
+notify_success() {
+    local n_pairs="$1" adapter_name="$2"
+    notify_user "🎓 <b>Lamark training complete</b>
+• Pairs used: ${n_pairs}
+• Adapter: <code>${adapter_name}</code>
+• Eval gate: ✓ promoted
+• Active after the next vLLM restart"
+}
+
+notify_rejection() {
+    local n_pairs="$1" adapter_name="$2"
+    notify_user "⚠️ <b>Lamark training: adapter rejected</b>
+• Pairs used: ${n_pairs}
+• Adapter: <code>${adapter_name}</code>
+• Eval gate failed — base model unchanged"
+}
+
+notify_skip() {
+    local n_pairs="$1" threshold="$2"
+    notify_user "ℹ️ <b>Lamark training skipped</b>
+• Pairs accumulated: ${n_pairs} / ${threshold} threshold
+• Will retry on next scheduled run"
+}
+
+notify_failure() {
+    local reason="$1"
+    notify_user "❌ <b>Lamark training failed</b>
+• Reason: <code>${reason}</code>
+• Check log: <code>$LOG</code>"
+}
 
 log "=== Lamark nightly retrain starting ==="
 
@@ -147,6 +202,11 @@ if [ "$TRAIN_FORCE" != "1" ] && [ "$N_PAIRS" -lt "$TRAIN_MIN_PAIRS" ]; then
     # Record a "skipped" marker so `lamark train --status` can show it
     echo "{\"ts\":\"$TS\",\"action\":\"skipped\",\"n_pairs\":$N_PAIRS,\"threshold\":$TRAIN_MIN_PAIRS}" \
         >> "$LAMARK_HOME/train-history.jsonl"
+    # Skipped runs only notify if the user explicitly forced via `train --now`
+    # — daily cron-driven skips on an empty archive would be spammy.
+    if [ "$TRAIN_FORCE" = "1" ]; then
+        notify_skip "$N_PAIRS" "$TRAIN_MIN_PAIRS"
+    fi
     exit 0
 fi
 
@@ -221,8 +281,10 @@ then
         sed -i "s|^  default:.*|  default: $ADAPTER_NAME|" "$HERMES_HOME_CFG" >> "$LOG" 2>&1 || true
         log "Default model alias bumped to $ADAPTER_NAME in $HERMES_HOME_CFG"
     fi
+    notify_success "$N_PAIRS" "$ADAPTER_NAME"
 else
     log "FAIL: gate rejected $ADAPTER_NAME — previous default stays."
+    notify_rejection "$N_PAIRS" "$ADAPTER_NAME"
 fi
 
 # --- 5. Record run outcome to train-history.jsonl --------------------------
