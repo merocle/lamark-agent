@@ -240,7 +240,7 @@ print(json.dumps({
         -w /lamark \
         --entrypoint /bin/bash \
         "$image" \
-        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name $model_name qwen-base $tcp_flag $perf_flags $spec_flag $tpl_flag $lora_flags" \
+        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --max-num-seqs 128 --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name $model_name qwen-base $tcp_flag $perf_flags $spec_flag $tpl_flag $lora_flags" \
         > "$LOG_FILE" 2>&1
 
     echo "Container started. Tail log: lamark logs vllm"
