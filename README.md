@@ -87,9 +87,16 @@ lamark serve start|stop|restart|status
                             # Local vLLM model server
 lamark status               # Health overview
 lamark switch-base <model>  # Change default base
-lamark train --now [--force]   # Run retrain immediately
-lamark train --status       # When was last / next scheduled / pending pairs
-lamark train --config       # Show training frequency + threshold
+lamark train --now [--force]      # Run retrain immediately
+lamark train --status             # Last/next/pending pairs
+lamark train --config             # Show training frequency + threshold
+lamark train --schedule           # Show current systemd timer schedule
+lamark train --schedule "<spec>"  # Set timer to fire on this OnCalendar spec
+                                  #   "*-*-* 03:00:00"      nightly 3am
+                                  #   "Sun *-*-* 04:30:00"  weekly Sun 04:30
+lamark train --schedule off       # Disable the timer (preserves unit files)
+lamark gateway install            # Install the messaging gateway as a
+                                  # systemd (Linux) / launchd (macOS) service
 lamark config get|set|show  # Edit Hermes-home config
 lamark logs vllm|nightly|download|chat
 ```
@@ -125,29 +132,64 @@ lamark config set model.default qwen-3.6-14b-dense
 ## How learning works
 
 ```
-You chat with Lamark
+You chat with Lamark via Telegram
        ↓
-Hermes memory_tool writes facts to USER.md
+LAMARK-PATCH A.9 hook fires `on_processing_complete`
        ↓
-LAMARK-PATCH A.4 mirrors each write into ~/.lamark/archive/
+src/lamark/capture/pair_writer.py appends one ChatML record
+to ~/.lamark/archive/incoming/<date>.jsonl  (source=user_explicit,
+confidence=0.5 — implicit positive signal)
        ↓
-Every night (or weekly) systemd timer fires
+systemd --user timer `lamark-trainer.timer` fires on its schedule
+(configured via `lamark train --schedule "..."`, default nightly 3am)
        ↓
 lamark-nightly-train.sh checks: do we have >= min_pairs new content?
        ↓ yes                       ↓ no
-Train a fresh LoRA adapter         Skip, log "below threshold"
+Train a fresh LoRA adapter         Skip silently (no notification)
        ↓
 Eval gate (identity probe + safety probe + coherence probe)
        ↓ pass                      ↓ fail
-Promote new adapter to default     Keep previous, log failure
+Promote new adapter to default     Keep previous adapter
+       ↓                            ↓
+🎓 Telegram notification           ⚠️ Telegram notification
+"adapter promoted"                  "adapter rejected, base unchanged"
 ```
 
-You can force a retrain regardless of threshold with
-`lamark train --now --force`. The eval gate is intentionally a smoke check,
-not a benchmark — for full evaluation we plan a separate `lamark eval`
-command in Phase 2.
+Every terminal state of a run lands as a structured line in
+`~/.lamark/train-history.jsonl`. Force a retrain regardless of
+threshold with `lamark train --now --force`. The eval gate is
+intentionally a smoke check, not a benchmark — for full evaluation
+we plan a separate `lamark eval` command in Phase 2.
 
 ---
+
+## Production deployment
+
+For a long-running install (the intended product shape — agent
+always-on, Telegram bot reachable, trainer firing on schedule),
+everything runs as systemd `--user` services on Linux. The `lamark`
+CLI installs and manages them for you:
+
+```bash
+# Install the messaging gateway (Telegram + Discord + ... — whichever
+# you've configured tokens for in ~/.lamark/hermes-home/.env)
+lamark gateway install
+
+# Install the nightly trainer + enable timer (default: every day at 3am)
+lamark train --schedule "*-*-* 03:00:00"
+```
+
+Both services use systemd lingering so they keep running after you
+log out. Verify with `systemctl --user is-active hermes-gateway`
+and `systemctl --user list-timers`.
+
+The model server (vLLM) runs in a Docker container managed by
+`lamark serve` — independent of systemd, so it stays untouched
+when you reload the gateway or training services.
+
+On macOS, the equivalent paths use launchd, but only the *gateway*
+side is verified there. macOS is recommended for development;
+production lives on the box with the GPU.
 
 ## Operational notes
 
@@ -219,5 +261,16 @@ disk-encryption layer, that's enough for now.
 ## License & attribution
 
 MIT. Lamark vendors **Hermes Agent** by [Nous Research](https://nousresearch.com)
-(MIT) at SHA `874c2b1f` with our `LAMARK-PATCH A.2/A.3/A.4/A.6` series applied.
+(MIT) at SHA `874c2b1f` with our `LAMARK-PATCH` series applied:
+
+| Patch | What it does |
+|---|---|
+| A.2 | Rebrand Hermes → Lamark in user-visible strings |
+| A.3 | Redaction pipeline for secrets in archive/memory |
+| A.4 | Archive mirror — memory writes also land in the training archive |
+| A.6 | License banner |
+| A.7 | launchd plist env injection (macOS gateway) |
+| A.8 | systemd unit env injection (Linux gateway) |
+| A.9 | Auto pair-capture hook on Telegram message completion |
+
 Full attribution preserved in `LICENSE` and `vendor/hermes/UPSTREAM.md`.
