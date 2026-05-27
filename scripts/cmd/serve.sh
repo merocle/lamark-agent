@@ -84,14 +84,20 @@ print(json.dumps({
     'expert_parallel': e.serving.expert_parallel,
     'tool_call_parser': e.serving.tool_call_parser or '',
     'gpu_memory_utilization': e.serving.gpu_memory_utilization,
+    'enable_prefix_caching': e.serving.enable_prefix_caching,
+    'enable_chunked_prefill': e.serving.enable_chunked_prefill,
+    'reasoning_parser': e.serving.reasoning_parser or '',
 }))
 ")"
-    local hf_id max_len ep tcp gmu
+    local hf_id max_len ep tcp gmu prefix_cache chunked_prefill reasoning
     hf_id="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['hf_id'])")"
     max_len="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['max_model_len'])")"
     ep="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['expert_parallel'])")"
     tcp="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['tool_call_parser'])")"
     gmu="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['gpu_memory_utilization'])")"
+    prefix_cache="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['enable_prefix_caching'])")"
+    chunked_prefill="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['enable_chunked_prefill'])")"
+    reasoning="$(echo "$registry_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['reasoning_parser'])")"
     local local_dir="$LAMARK_HOME/models/hf/$(echo "$hf_id" | tr '/' '_')"
     [ -d "$local_dir" ] || { echo "ERROR: model not downloaded at $local_dir. Run \`lamark setup\`."; exit 3; }
 
@@ -115,6 +121,19 @@ print(json.dumps({
     local tcp_flag=""
     if [ -n "$tcp" ] && [ "$tcp" != "None" ]; then
         tcp_flag="--enable-auto-tool-choice --tool-call-parser $tcp"
+    fi
+
+    # Optional perf flags. Booleans come back from python as "True"/"False"
+    # strings; treat any non-"True" value as off.
+    local perf_flags=""
+    if [ "$prefix_cache" = "True" ]; then
+        perf_flags="$perf_flags --enable-prefix-caching"
+    fi
+    if [ "$chunked_prefill" = "True" ]; then
+        perf_flags="$perf_flags --enable-chunked-prefill"
+    fi
+    if [ -n "$reasoning" ] && [ "$reasoning" != "None" ]; then
+        perf_flags="$perf_flags --reasoning-parser $reasoning"
     fi
 
     # LoRA adapter discovery: every subdir of $LAMARK_HOME/adapters/ with an
@@ -171,7 +190,7 @@ print(json.dumps({
         -w /lamark \
         --entrypoint /bin/bash \
         "$image" \
-        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name qwen-base $tcp_flag $tpl_flag $lora_flags" \
+        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name qwen-base $tcp_flag $perf_flags $tpl_flag $lora_flags" \
         > "$LOG_FILE" 2>&1
 
     echo "Container started. Tail log: lamark logs vllm"

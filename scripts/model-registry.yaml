@@ -62,13 +62,23 @@ models:
       # but verified to fit. Above 128K (e.g. the 262K model max), KV
       # cache spikes past the headroom and triggers the same memory
       # pressure thrashing that hung Spark-01 in earlier testing.
-      # If you DO push to 262144, also drop gpu_memory_utilization to
-      # 0.70 and stop any other GPU workload first.
       max_model_len: 131072
       expert_parallel: true
-      gpu_memory_utilization: 0.85
+      # Dropped from 0.85 → 0.65 alongside the perf-flag rollout: on
+      # Spark unified memory, more headroom keeps the KV cache off the
+      # slow allocator path mid-decode.
+      gpu_memory_utilization: 0.65
       tool_call_parser: "qwen3_xml"
       enable_auto_tool_choice: true
+      # Reuses KV for repeated prompt prefixes — every Lamark request
+      # carries the same ~785-token identity preamble, so cache hit
+      # rate is effectively 100% after warmup.
+      enable_prefix_caching: true
+      # Overlaps prompt prefill with ongoing decode in the same step.
+      enable_chunked_prefill: true
+      # Qwen3 emits internal reasoning tokens; this parser strips them
+      # from the streamed response so clients see clean text.
+      reasoning_parser: "qwen3"
 
   qwen-3.6-27b-dense:
     hf_id: "Qwen/Qwen3.6-27B"

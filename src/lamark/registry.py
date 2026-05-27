@@ -36,6 +36,14 @@ class ServingConfig:
     # headroom for the agent runtime + KV cache spikes; on tier S (Spark,
     # 128 GB unified) higher values trigger memory pressure thrashing.
     gpu_memory_utilization: float = 0.85
+    # Perf flags. Prefix-caching reuses KV for repeated prompt prefixes —
+    # huge win for chat with a constant ~785-token identity preamble.
+    # Chunked-prefill overlaps prefill with decode. reasoning-parser
+    # filters the model's internal thinking trace out of the response
+    # (Qwen3 only; set to "qwen3" to enable).
+    enable_prefix_caching: bool = False
+    enable_chunked_prefill: bool = False
+    reasoning_parser: Optional[str] = None
 
 
 @dataclass
@@ -106,6 +114,9 @@ def load_registry(path: Optional[Path] = None) -> dict[str, ModelEntry | TierSpe
                 tool_call_parser=serving.get("tool_call_parser"),
                 enable_auto_tool_choice=bool(serving.get("enable_auto_tool_choice", True)),
                 gpu_memory_utilization=float(serving.get("gpu_memory_utilization", 0.85)),
+                enable_prefix_caching=bool(serving.get("enable_prefix_caching", False)),
+                enable_chunked_prefill=bool(serving.get("enable_chunked_prefill", False)),
+                reasoning_parser=serving.get("reasoning_parser"),
             ),
         )
 
