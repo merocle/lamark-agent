@@ -5678,6 +5678,21 @@ class TelegramAdapter(BasePlatformAdapter):
         another agent run to swap it to 👍/👎 — which never happens if the
         cancellation was the last activity in the chat.
         """
+        # LAMARK-PATCH A.9: persist every successful exchange into the
+        # local training archive. The pair_writer is fail-safe — any
+        # error inside is swallowed and never crashes the lifecycle.
+        # We try-guard the import itself so installations without lamark
+        # on sys.path (vanilla Hermes) keep working unchanged.
+        try:
+            from lamark.capture import capture_exchange as _lamark_capture
+        except ImportError:
+            _lamark_capture = None
+        if _lamark_capture is not None:
+            try:
+                await _lamark_capture(event, outcome)
+            except Exception as _lamark_exc:  # noqa: BLE001
+                logger.debug("[%s] lamark pair capture failed: %s", self.name, _lamark_exc)
+
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
