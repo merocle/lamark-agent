@@ -1,0 +1,52 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          components: rustfmt, clippy
+      - uses: mozilla-actions/sccache-action@v0.0.5
+      - uses: taiki-e/install-action@cargo-nextest
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo deny check
+      - run: cargo nextest run --workspace
+      - run: cargo build --release --workspace
+      - run: ls -la target/release/lamark
+      - name: binary size budget
+        run: |
+          SIZE=$(stat -c%s target/release/lamark 2>/dev/null || stat -f%z target/release/lamark)
+          test "$SIZE" -lt 30000000
+
+  no-forbidden-refs:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if grep -r --include='*.rs' --include='*.md' -nE 'pyworker|python_bridge|strangler' .; then
+            echo "Leftover bridge references found"; exit 1
+          fi
+
+  proto-up-to-date:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - run: cargo run -p lamark-protocol --bin generate
+      - run: git diff --exit-code

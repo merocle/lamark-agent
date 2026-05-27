@@ -1,23 +1,15 @@
-# Python
+# ── Rust / Cargo ─────────────────────────────────────────────────────────────
+target/
+Cargo.lock
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
 MANIFEST
 
@@ -28,7 +20,7 @@ ENV/
 .python-version
 uv.lock
 
-# Model weights and artifacts — NEVER commit
+# ── Model weights and artifacts — NEVER commit ───────────────────────────────
 models/
 *.safetensors
 *.gguf
@@ -36,20 +28,20 @@ models/
 *.pt
 *.pth
 
-# Adapters — local only, may contain user-trained personal data
-adapters/*.bin
-adapters/*.safetensors
-adapters/*/checkpoint-*/
-adapters/*.gguf
+# ── LoRA adapters — local only, may contain user-trained personal data ────────
+python/adapters/*.bin
+python/adapters/*.safetensors
+python/adapters/*/checkpoint-*/
+python/adapters/*.gguf
 
-# LoRA training outputs
+# ── Training outputs ──────────────────────────────────────────────────────────
 outputs/
 runs/
 wandb/
-logs/
 
-# Memory store — contains user personal data
+# ── Lamark runtime — user personal data, never commit ────────────────────────
 .lamark/
+*.lamark.db
 data/memory/
 data/embeddings/
 data/lancedb/
@@ -59,52 +51,60 @@ data/honcho/
 *.sqlite
 *.sqlite3
 
-# Curated training data — contains personal conversations
+# ── Curated training data — contains personal conversations ──────────────────
 data/curated/
 data/raw/
 data/redacted/
 data/replay_buffer/
 
-# Secrets
+# ── Secrets ───────────────────────────────────────────────────────────────────
 .env
 .env.local
 .env.*.local
+!.env.example
 *.key
 *.pem
 secrets/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-.DS_Store
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
 
-# Tests / coverage
+# ── Generated / build artifacts ───────────────────────────────────────────────
+/dist/
+/webui/.svelte-kit/
+/webui/build/
+/webui/node_modules/
+
+# ── Tests / coverage ─────────────────────────────────────────────────────────
 .pytest_cache/
 .coverage
 .coverage.*
 htmlcov/
-.tox/
-.nox/
 coverage.xml
 *.cover
 
-# Type checking
+# ── Type checking ─────────────────────────────────────────────────────────────
 .mypy_cache/
-.dmypy.json
-dmypy.json
-.pyre/
-.pytype/
 .ruff_cache/
 
-# Smoke test results (kept out of git — Spark-specific)
+# ── Smoke test results (Spark-specific) ──────────────────────────────────────
 smoke_test_results/
 *.smoke.json
 
-# Hermes vendor — code committed, runtime artefacts ignored
-vendor/hermes/**/__pycache__/
-vendor/hermes/**/*.pyc
-vendor/hermes/**/node_modules/
-vendor/hermes/**/.venv/
-vendor/hermes/.lamark/
+# ── Hermes vendor — code committed, runtime artefacts ignored ────────────────
+python/vendor/hermes/**/__pycache__/
+python/vendor/hermes/**/*.pyc
+python/vendor/hermes/**/node_modules/
+python/vendor/hermes/**/.venv/
+python/vendor/hermes/.lamark/
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store

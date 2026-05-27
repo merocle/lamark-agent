@@ -1,0 +1,114 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lamark",
+    "crates/lamark-config",
+    "crates/lamark-core",
+    "crates/lamark-providers",
+    "crates/lamark-tools",
+    "crates/lamark-sandbox",
+    "crates/lamark-hooks",
+    "crates/lamark-trace",
+    "crates/lamark-prompt",
+    "crates/lamark-cache",
+    "crates/lamark-memory",
+    "crates/lamark-kb-client",
+    "crates/lamark-skills",
+    "crates/lamark-plugins",
+    "crates/lamark-gateway",
+    "crates/lamark-mcp",
+    "crates/lamark-acp",
+    "crates/lamark-webui",
+    "crates/lamark-remote",
+    "crates/lamark-policy",
+    "crates/lamark-coordinator",
+    "crates/lamark-protocol",
+    "crates/lamark-test-utils",
+]
+
+[workspace.package]
+edition       = "2024"
+rust-version  = "1.94.1"
+license       = "MIT"
+authors       = ["Lamark contributors"]
+repository    = "https://github.com/lamark-agent/lamark-agent"
+
+[workspace.lints.rust]
+unsafe_code      = "deny"
+missing_docs     = "warn"
+unused_must_use  = "deny"
+
+[workspace.lints.clippy]
+pedantic       = { level = "warn", priority = -1 }
+nursery        = { level = "warn", priority = -1 }
+unwrap_used    = "deny"
+expect_used    = "warn"
+panic          = "deny"
+todo           = "warn"
+unimplemented  = "warn"
+print_stdout   = "deny"
+print_stderr   = "deny"
+
+[workspace.dependencies]
+# async runtime
+tokio              = { version = "1",    features = ["full"] }
+tokio-util         = { version = "0.7",  features = ["full"] }
+# http
+reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# serialization
+serde              = { version = "1",    features = ["derive"] }
+serde_json         = "1"
+serde_yaml         = "0.9"
+schemars           = { version = "0.8",  features = ["uuid1"] }
+# error handling
+anyhow             = "1"
+thiserror          = "2"
+# tracing
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3",  features = ["env-filter", "json"] }
+tracing-appender   = "0.2"
+# cli
+clap               = { version = "4",    features = ["derive", "env"] }
+# config
+figment            = { version = "0.10", features = ["yaml", "env", "toml"] }
+# tui
+ratatui            = "0.29"
+crossterm          = "0.28"
+# concurrency
+dashmap            = "6"
+arc-swap           = "1"
+parking_lot        = "0.12"
+futures            = "0.3"
+async-trait        = "0.1"
+# tokenizer
+tokenizers         = "0.20"
+# mcp
+rmcp               = "0.15"
+# wasm / plugin host
+wasmtime           = { version = "27",   features = ["component-model", "async"] }
+libloading         = "0.8"
+# storage
+rusqlite           = { version = "0.32", features = ["bundled", "fts5"] }
+# utilities
+notify             = "6"
+url                = "2"
+chrono             = { version = "0.4",  features = ["serde"] }
+uuid               = { version = "1",    features = ["v7", "serde"] }
+xxhash-rust        = { version = "0.8",  features = ["xxh3"] }
+eventsource-stream = "0.2"
+dotenvy            = "0.15"
+# dev / test
+wiremock           = "0.6"
+insta              = "1"
+rstest             = "0.23"
+proptest           = "1"
+pretty_assertions  = "1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
+panic         = "abort"

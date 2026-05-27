@@ -1,0 +1,27 @@
+pub mod chat;
+pub mod gateway;
+pub mod mcp;
+pub mod acp;
+pub mod skills;
+pub mod plugins;
+pub mod trace;
+pub mod config;
+pub mod webui;
+pub mod remote;
+pub mod agent;
+pub mod exec;
+pub mod doctor;
+
+pub use chat::run as chat;
+pub use gateway::run as gateway;
+pub use mcp::run as mcp;
+pub use acp::run as acp;
+pub use skills::run as skills;
+pub use plugins::run as plugins;
+pub use trace::run as trace;
+pub use config::run as config;
+pub use webui::run as webui;
+pub use remote::run as remote;
+pub use agent::run as agent;
+pub use exec::run as exec;
+pub use doctor::run as doctor;

@@ -1,0 +1,13 @@
+[build]
+# Uncomment after installing sccache: cargo install sccache
+# rustc-wrapper = "sccache"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-apple-darwin]
+# lld is used in CI; local macOS uses the default ld via Xcode
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[net]
+git-fetch-with-cli = true

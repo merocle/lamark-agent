@@ -1,0 +1,70 @@
+default:
+    just --list
+
+# ───── build
+
+build:
+    cargo build --workspace --release
+
+build-dev:
+    cargo build --workspace
+
+# ───── test
+# Requires: cargo install cargo-nextest
+
+test *ARGS:
+    cargo nextest run --workspace {{ARGS}}
+
+test-fast *ARGS:
+    cargo nextest run --workspace -E "not test(slow)" {{ARGS}}
+
+test-e2e *ARGS:
+    LAMARK_E2E=1 cargo nextest run --workspace -E "test(e2e_)" {{ARGS}}
+
+# ───── lint / format
+
+fmt:
+    cargo fmt --all
+
+lint *ARGS:
+    cargo clippy --all-targets --all-features -- -D warnings {{ARGS}}
+
+fix *ARGS:
+    cargo clippy --fix --allow-dirty --allow-staged {{ARGS}}
+    just fmt
+
+deny:
+    cargo deny check
+
+# ───── docs
+
+docs:
+    mdbook build ../docs
+
+docs-serve:
+    mdbook serve ../docs --open
+
+# ───── snapshots
+
+snapshot *ARGS:
+    cargo insta accept {{ARGS}}
+
+# ───── supply chain
+
+audit:
+    cargo audit
+
+update:
+    cargo update --workspace
+
+# ───── proto
+
+proto-gen:
+    cargo run -p lamark-protocol --bin generate
+
+# ───── release
+
+release-bin TARGET:
+    cargo build --release --target {{TARGET}}
+    strip target/{{TARGET}}/release/lamark
+    tar czf lamark-{{TARGET}}.tar.gz -C target/{{TARGET}}/release lamark
