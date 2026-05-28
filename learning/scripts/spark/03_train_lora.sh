@@ -12,17 +12,18 @@
 #   ./03_train_lora.sh --steps 50         # quick smoke test (50 steps)
 #
 # Env vars:
-#   NEMO_IMAGE        NGC NeMo container  (default: nvcr.io/nvidia/nemo:latest)
-#   MODEL_ID          HF model repo       (default: nvidia/Nemotron-Nano-Omni-3B)
-#   LAMARK_MODEL_DIR  host model dir      (default: ~/.lamark/models)
-#   WORKSPACE         container workspace  (default: /workspace)
+#   TRAIN_IMAGE       training container   (default: nvcr.io/nvidia/pytorch:26.01-py3)
+#   MODEL_ID          HF model repo        (default: nvidia/Nemotron-Nano-Omni-3B)
+#   LAMARK_MODEL_DIR  host model dir       (default: ~/.lamark/models)
+#   LAMARK_DATA_DIR   host data dir        (default: ~/.lamark/data)
 #   MAX_STEPS         training steps       (default: 200)
 
 set -euo pipefail
 
-NEMO_IMAGE="${NEMO_IMAGE:-nvcr.io/nvidia/nemo:latest}"
+TRAIN_IMAGE="${TRAIN_IMAGE:-nvcr.io/nvidia/pytorch:26.01-py3}"
 MODEL_ID="${MODEL_ID:-nvidia/Nemotron-Nano-Omni-3B}"
 LAMARK_MODEL_DIR="${LAMARK_MODEL_DIR:-$HOME/.lamark/models}"
+LAMARK_DATA_DIR="${LAMARK_DATA_DIR:-$HOME/.lamark/data}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-$HOME/.lamark/checkpoints/nemotron-nano-lora}"
 MAX_STEPS="${MAX_STEPS:-200}"
 SKIP_DATA=0
@@ -46,12 +47,13 @@ warn() { printf "\033[1;33m[train]\033[0m %s\n" "$*"; }
 
 echo
 log "=== NeMo LoRA SFT on DGX Spark ==="
+log "Container  : $TRAIN_IMAGE"
 log "Model      : $MODEL_ID"
 log "Max steps  : $MAX_STEPS"
 log "Checkpoint : $CHECKPOINT_DIR"
 echo
 
-mkdir -p "$CHECKPOINT_DIR"
+mkdir -p "$CHECKPOINT_DIR" "$LAMARK_DATA_DIR"
 
 MODEL_SLUG=$(echo "$MODEL_ID" | tr '/' '_')
 MODEL_LOCAL="$LAMARK_MODEL_DIR/hf/$MODEL_SLUG"
@@ -77,11 +79,12 @@ DOCKER_RUN=(
     -e DATA_VAL=/workspace/data/val.jsonl
     -e CHECKPOINT_DIR=/workspace/checkpoints
     -v "$LAMARK_MODEL_DIR:/workspace/models"
+    -v "$LAMARK_DATA_DIR:/workspace/data"
     -v "$CHECKPOINT_DIR:/workspace/checkpoints"
     -v "$SCRIPT_DIR:/workspace/scripts"
     -v "$REPO_ROOT:/workspace/lamark-agent"
     -w /workspace
-    "$NEMO_IMAGE"
+    "$TRAIN_IMAGE"
 )
 
 # 1. Prepare data
@@ -96,7 +99,11 @@ fi
 
 # 2. Run LoRA training
 log "Starting LoRA SFT training ($MAX_STEPS steps)..."
-"${DOCKER_RUN[@]}" python3 /workspace/scripts/train_lora.py
+"${DOCKER_RUN[@]}" bash -c "
+    pip install peft trl accelerate 'torchao>=0.16.0' -q
+    pip install --no-build-isolation mamba-ssm causal-conv1d -q
+    python3 /workspace/scripts/train_lora.py
+"
 
 ok "Training complete."
 echo

@@ -198,7 +198,10 @@ def run_peft_fallback() -> None:
     )
 
     trainer.train()
-    trainer.save_model(CHECKPOINT_DIR)
+    try:
+        trainer.save_model(CHECKPOINT_DIR)
+    except Exception as exc:
+        print(f"[train_lora] save_model warning (checkpoint already saved by save_steps): {exc}")
     print(f"[train_lora] HF PEFT training complete. Adapter: {CHECKPOINT_DIR}")
 
 

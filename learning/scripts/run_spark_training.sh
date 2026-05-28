@@ -3,10 +3,10 @@
 # on the DGX Spark over SSH.
 #
 # Steps:
-#   0. spark: 00_cleanup.sh   — stop containers, prune Docker
-#   1. spark: 01_setup.sh     — pull NeMo image, clone NeMo repo, download model
-#   2. spark: 03_train_lora.sh — prepare data + run LoRA SFT (NeMo 2.0)
-#   3. spark: 04_validate.sh  — perplexity + sample generations
+#   0. spark: 00_cleanup.sh    — stop containers, prune Docker
+#   1. spark: 01_setup.sh      — pull training container, download model
+#   2. spark: 03_train_lora.sh — prepare data + run LoRA SFT
+#   3. spark: 04_validate.sh   — perplexity delta (base vs adapter)
 #
 # Usage (from your local machine):
 #   ./scripts/run_spark_training.sh
@@ -16,12 +16,12 @@
 #   SPARK_HOST=jetbrains@10.212.212.1 ./scripts/run_spark_training.sh
 #
 # Requirements (local machine):
-#   - ssh key access to SPARK_HOST (or SSH_KEY set to a key file)
-#   - The lamark-agent repo must be present on Spark at SPARK_REPO_DIR
+#   - ssh + scp access to SPARK_HOST (OpenSSH; no rsync needed)
+#   - SSH_KEY set if not using the default key
 #
-# Requirements (DGX Spark, auto-satisfied by 01_setup.sh):
+# Requirements (DGX Spark):
 #   - Docker with NVIDIA container toolkit
-#   - nvidia-smi accessible
+#   - nvcr.io/nvidia/pytorch:26.01-py3 image available (or set TRAIN_IMAGE)
 #   - ~50 GB free on model storage path
 
 set -euo pipefail
@@ -68,11 +68,11 @@ fi
 ok "SSH connection OK."
 echo
 
-# Sync the spark/ scripts to Spark (rsync is faster than git pull for quick iteration)
+# Sync scripts to Spark via scp (no rsync required; works on Windows OpenSSH)
+SPARK_SCRIPT_DIR="$(dirname "$0")/spark"
 log "Syncing learning/scripts/spark/ to $SPARK_HOST:$SPARK_REPO_DIR/learning/scripts/spark/ ..."
-rsync -az --progress \
-    --rsh "ssh ${SSH_OPTS[*]}" \
-    "$(dirname "$0")/spark/" \
+ssh "${SSH_OPTS[@]}" "$SPARK_HOST" "mkdir -p $SPARK_REPO_DIR/learning/scripts/spark"
+scp "${SSH_OPTS[@]}" -r "$SPARK_SCRIPT_DIR/." \
     "$SPARK_HOST:$SPARK_REPO_DIR/learning/scripts/spark/"
 ok "Scripts synced."
 echo
@@ -92,7 +92,7 @@ fi
 
 # ── Step 1: setup (pull NeMo image + model) ──────────────────────────────────
 if [ "$SKIP_SETUP" -eq 0 ]; then
-    spark_run "Step 1/4: pull NeMo container + download model" bash -c "
+    spark_run "Step 1/4: pull training container + download model" bash -c "
         chmod +x $SPARK_SCRIPTS/01_setup.sh
         $SPARK_SCRIPTS/01_setup.sh
     "
@@ -119,6 +119,7 @@ ok "=== Training sequence complete ==="
 echo
 echo "  Spark checkpoint: $SPARK_HOST:~/.lamark/checkpoints/nemotron-nano-lora/"
 echo
-echo "  To copy adapter back locally:"
-echo "    rsync -az $SPARK_HOST:~/.lamark/checkpoints/nemotron-nano-lora/ \\"
+echo "  To copy adapter back locally (scp, no rsync needed):"
+echo "    mkdir -p ~/.lamark/adapters/nemotron-nano-lora"
+echo "    scp -r $SPARK_HOST:~/.lamark/checkpoints/nemotron-nano-lora/. \\"
 echo "          ~/.lamark/adapters/nemotron-nano-lora/"

@@ -2,14 +2,17 @@
 """
 Validate a LoRA adapter produced by train_lora.py.
 
-Computes perplexity on the validation set and prints sample generations
-for a set of fixed prompts to verify the adapter is functional.
+Computes perplexity on the validation set: base model vs. adapter-merged model.
+Uses a manual safetensors merge to bypass PeftModel.from_pretrained(), which is
+broken for NemotronH (WeightConverter.__init__ unexpected kwarg bug in PEFT 0.19).
+Uses forward-pass perplexity only; model.generate() is skipped because NemotronH
+requires NemotronHHybridDynamicCache initialisation not available outside the model.
 
 Environment variables (all required):
     MODEL_LOCAL    path to base model
-    ADAPTER_DIR    path to LoRA adapter checkpoint
+    ADAPTER_DIR    path to LoRA adapter checkpoint (the checkpoint-N subdirectory)
     DATA_VAL       path to val.jsonl (NeMo conversation format)
-    MAX_SAMPLES    number of validation samples to score (default: 100)
+    MAX_SAMPLES    number of validation samples to score (default: 50)
 """
 from __future__ import annotations
 
@@ -26,94 +29,97 @@ def _env(key: str, default: str = "") -> str:
     return val
 
 
-MODEL_LOCAL  = _env("MODEL_LOCAL")
-ADAPTER_DIR  = _env("ADAPTER_DIR")
-DATA_VAL     = _env("DATA_VAL")
-MAX_SAMPLES  = int(os.environ.get("MAX_SAMPLES", "100"))
+MODEL_LOCAL = _env("MODEL_LOCAL")
+ADAPTER_DIR = _env("ADAPTER_DIR")
+DATA_VAL    = _env("DATA_VAL")
+MAX_SAMPLES = int(os.environ.get("MAX_SAMPLES", "50"))
 
 import torch
-from peft import PeftModel
+from safetensors.torch import load_file
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-print(f"[validate] Loading base model from {MODEL_LOCAL} ...")
+print(f"[validate] Model   : {MODEL_LOCAL}")
+print(f"[validate] Adapter : {ADAPTER_DIR}")
+print(f"[validate] Val set : {DATA_VAL}  (n={MAX_SAMPLES})")
+print()
+
+print("[validate] Loading tokenizer...")
 tok = AutoTokenizer.from_pretrained(MODEL_LOCAL, trust_remote_code=True)
 if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 
-base = AutoModelForCausalLM.from_pretrained(
+print("[validate] Loading model (bf16, GPU)...")
+model = AutoModelForCausalLM.from_pretrained(
     MODEL_LOCAL,
     torch_dtype=torch.bfloat16,
     device_map="auto",
     trust_remote_code=True,
-)
-base.config.use_cache = False
+).eval()
+dev = next(model.parameters()).device
 
-print(f"[validate] Loading LoRA adapter from {ADAPTER_DIR} ...")
-model = PeftModel.from_pretrained(base, ADAPTER_DIR)
-model.eval()
 
-device = next(model.parameters()).device
-
-# ── Perplexity on validation set ──────────────────────────────────────────────
 def conv_to_text(record: dict) -> str:
     turns = record.get("conversations", [])
     return "\n".join(
         f"<|{t['role']}|>\n{t['value']}" for t in turns
     ) + "\n<|end|>"
 
-print(f"\n[validate] Computing perplexity on up to {MAX_SAMPLES} val samples ...")
 
-total_nll = 0.0
-total_tokens = 0
-
-with open(DATA_VAL, encoding="utf-8") as f:
-    for i, line in enumerate(f):
-        if i >= MAX_SAMPLES:
-            break
-        record = json.loads(line)
-        text   = conv_to_text(record)
-        enc    = tok(text, return_tensors="pt", truncation=True, max_length=2048)
-        input_ids = enc["input_ids"].to(device)
-
+def perplexity(lines: list[str]) -> float:
+    total_nll, total_tok = 0.0, 0
+    for line in lines:
+        text = conv_to_text(json.loads(line))
+        ids = tok(text, return_tensors="pt", truncation=True,
+                  max_length=2048)["input_ids"].to(dev)
         with torch.no_grad():
-            out = model(input_ids, labels=input_ids)
-            nll = out.loss.item()
+            loss = model(ids, labels=ids).loss.item()
+        total_nll += loss * ids.shape[1]
+        total_tok += ids.shape[1]
+    return math.exp(total_nll / total_tok)
 
-        n = input_ids.shape[1]
-        total_nll    += nll * n
-        total_tokens += n
 
-perplexity = math.exp(total_nll / total_tokens) if total_tokens > 0 else float("inf")
-print(f"\n  Validation perplexity (n={i+1} samples): {perplexity:.2f}")
-print(f"  (lower is better; expect < 10 for a well-converged small SFT run)")
+val_lines = open(DATA_VAL).readlines()[:MAX_SAMPLES]
 
-# ── Sample generations ────────────────────────────────────────────────────────
-PROBE_PROMPTS = [
-    "Explain what a neural network is in one sentence.",
-    "Write a Python function that returns the factorial of n.",
-    "What is the capital of France?",
-]
+# Baseline PPL
+ppl_base = perplexity(val_lines)
+print(f"[validate] Base model PPL (n={MAX_SAMPLES}): {ppl_base:.2f}")
 
-print("\n[validate] Sample generations:")
-print("─" * 60)
+# Apply LoRA: W += B @ A * (alpha / r)
+print("[validate] Applying LoRA adapter...")
+cfg   = json.loads(Path(f"{ADAPTER_DIR}/adapter_config.json").read_text())
+scale = cfg["lora_alpha"] / cfg["r"]
+st    = load_file(f"{ADAPTER_DIR}/adapter_model.safetensors")
+params = dict(model.named_parameters())
 
-for prompt in PROBE_PROMPTS:
-    text = f"<|user|>\n{prompt}\n<|assistant|>\n"
-    enc  = tok(text, return_tensors="pt").to(device)
+applied = 0
+for a_key in (k for k in st if ".lora_A." in k):
+    b_key = a_key.replace(".lora_A.", ".lora_B.")
+    if b_key not in st:
+        continue
+    # NemotronH: PEFT saves 'base_model.model.backbone.*', model stores 'backbone.*'
+    p_name = (a_key
+              .replace("base_model.model.", "", 1)
+              .replace(".lora_A.weight", ".weight"))
+    if p_name not in params:
+        continue
+    p  = params[p_name]
+    lA = st[a_key].to(p.device, dtype=torch.bfloat16)
+    lB = st[b_key].to(p.device, dtype=torch.bfloat16)
     with torch.no_grad():
-        out = model.generate(
-            **enc,
-            max_new_tokens=128,
-            do_sample=False,
-            temperature=1.0,
-            repetition_penalty=1.1,
-            pad_token_id=tok.eos_token_id,
-        )
-    generated = tok.decode(
-        out[0][enc["input_ids"].shape[1]:], skip_special_tokens=True
-    )
-    print(f"Prompt : {prompt}")
-    print(f"Response: {generated.strip()}")
-    print("─" * 60)
+        p.data += (lB @ lA) * scale
+    applied += 1
 
-print("\n[validate] Done.")
+total_lora = len([k for k in st if ".lora_A." in k])
+print(f"[validate]   Merged {applied}/{total_lora} LoRA pairs  (scale={scale:.1f})")
+
+# Adapter PPL
+ppl_adapter = perplexity(val_lines)
+delta = ppl_base - ppl_adapter
+
+print()
+print(f"{'='*52}")
+print(f"  Base model PPL      : {ppl_base:>8.2f}")
+print(f"  + LoRA adapter PPL  : {ppl_adapter:>8.2f}")
+print(f"  Delta               : {delta:>+8.2f}  ({'improved' if delta > 0 else 'no change / degraded'})")
+print(f"{'='*52}")
+print("[validate] Done.")
