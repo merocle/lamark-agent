@@ -308,15 +308,43 @@ if PYTHONPATH="$REPO/src" "$LAMARK_HOME/venv/bin/python" \
 then
     GATE_RESULT="promoted"
     log "PASS: gate accepted $ADAPTER_NAME — promoting to default."
-    # Update HERMES_HOME config.yaml to point default → new adapter.
+
+    # Stable-name strategy: serve.sh mounts only $LAMARK_HOME/adapters/current
+    # (a symlink) under the alias `lamark`. After each promotion we re-point
+    # the symlink at the new adapter directory atomically, then clean up old
+    # promoted dirs (keep latest 2 for rollback). Result: /model picker
+    # shows ONE local "lamark" entry instead of a growing pile of timestamp
+    # names, and Mamba cache budget doesn't drift as adapters accumulate.
+    ln -sfn "$ADAPTER_DIR/$ADAPTER_NAME" "$ADAPTER_DIR/current"
+    log "Symlink updated: adapters/current → $ADAPTER_NAME"
+
+    # Trim old promoted adapter dirs (keep the latest 2 — current + previous
+    # for fast rollback). Rejected adapters (handled in the else branch) are
+    # removed immediately, so we only need to manage promoted siblings here.
+    # We list by mtime newest-first, skip the symlink + the 2 most recent
+    # adapter dirs, drop the rest via Docker (which has root and can rm the
+    # root-owned files the training container created).
+    OLD_DIRS=$(ls -dt "$ADAPTER_DIR"/nightly-*/ 2>/dev/null | tail -n +3 | tr '\n' ' ')
+    if [ -n "$OLD_DIRS" ]; then
+        log "Cleaning up old adapter dirs: $OLD_DIRS"
+        docker run --rm -v "$ADAPTER_DIR:/work" alpine sh -c "rm -rf $(echo $OLD_DIRS | sed "s|$ADAPTER_DIR|/work|g")" >> "$LOG" 2>&1 || true
+    fi
+
+    # Point config.yaml at the stable alias instead of the timestamp name.
     HERMES_HOME_CFG="$LAMARK_HOME/hermes-home/config.yaml"
     if [ -f "$HERMES_HOME_CFG" ]; then
-        sed -i "s|^  default:.*|  default: $ADAPTER_NAME|" "$HERMES_HOME_CFG" >> "$LOG" 2>&1 || true
-        log "Default model alias bumped to $ADAPTER_NAME in $HERMES_HOME_CFG"
+        sed -i "s|^  default:.*|  default: lamark|" "$HERMES_HOME_CFG" >> "$LOG" 2>&1 || true
+        log "Default model alias set to 'lamark' (stable) in $HERMES_HOME_CFG"
     fi
     notify_success "$N_PAIRS" "$ADAPTER_NAME"
 else
     log "FAIL: gate rejected $ADAPTER_NAME — previous default stays."
+    # Rejected adapter is dead weight — delete its dir now so Mamba cache
+    # budget stays clean and the picker doesn't accumulate stale names.
+    # Same Docker-as-root trick we use for cleanup elsewhere.
+    docker run --rm -v "$ADAPTER_DIR:/work" alpine \
+        rm -rf "/work/$ADAPTER_NAME" >> "$LOG" 2>&1 || true
+    log "Removed rejected adapter dir $ADAPTER_NAME"
     notify_rejection "$N_PAIRS" "$ADAPTER_NAME"
 fi
 

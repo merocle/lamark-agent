@@ -186,21 +186,16 @@ print(json.dumps({
         spec_flag="--speculative-config '{\"method\":\"dflash\",\"model\":\"$spec_container_dir\",\"num_speculative_tokens\":$spec_tokens}' --max-num-batched-tokens 16384"
     fi
 
-    # LoRA adapter discovery: every subdir of $LAMARK_HOME/adapters/ with an
-    # adapter_config.json gets exposed as a serving model.
+    # LoRA adapter mount: only the `current` symlink (always points at the
+    # latest promoted adapter, maintained by lamark-nightly-train.sh). We
+    # advertise it under the stable name `lamark` — that's what config.yaml
+    # `model.default` references, so the user never sees per-train
+    # timestamps in the /model picker. Old adapter dirs are cleaned up by
+    # the trainer after promotion; rejected adapters get deleted immediately.
     local lora_flags=""
-    if [ -d "$LAMARK_HOME/adapters" ]; then
-        local lora_list=""
-        for d in "$LAMARK_HOME/adapters"/*/; do
-            [ -d "$d" ] || continue
-            [ -f "$d/adapter_config.json" ] || continue
-            local name; name="$(basename "$d")"
-            lora_list="$lora_list $name=/lamark/adapters/$name"
-        done
-        if [ -n "$lora_list" ]; then
-            local n_loras; n_loras="$(ls -1 "$LAMARK_HOME/adapters" | wc -l | tr -d ' ')"
-            lora_flags="--enable-lora --max-lora-rank 16 --max-loras $n_loras --lora-modules$lora_list"
-        fi
+    local current_adapter="$LAMARK_HOME/adapters/current"
+    if [ -L "$current_adapter" ] && [ -f "$current_adapter/adapter_config.json" ]; then
+        lora_flags="--enable-lora --max-lora-rank 16 --max-loras 1 --lora-modules lamark=/lamark/adapters/current"
     fi
 
     echo "Starting vLLM container: $hf_id (max_len=$max_len)"
@@ -240,7 +235,7 @@ print(json.dumps({
         -w /lamark \
         --entrypoint /bin/bash \
         "$image" \
-        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --max-num-seqs 128 --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name $model_name qwen-base $tcp_flag $perf_flags $spec_flag $tpl_flag $lora_flags" \
+        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --max-num-seqs 128 --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name qwen-base $tcp_flag $perf_flags $spec_flag $tpl_flag $lora_flags" \
         > "$LOG_FILE" 2>&1
 
     echo "Container started. Tail log: lamark logs vllm"
