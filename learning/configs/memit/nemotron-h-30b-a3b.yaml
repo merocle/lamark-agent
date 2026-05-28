@@ -1,0 +1,66 @@
+# MEMIT hyperparameters for NVIDIA Nemotron-H-3-Nano-30B-A3B-BF16.
+#
+# Status: RESEARCH-GRADE. NemotronH is NOT in EasyEdit's officially supported
+# model list. Two architectural facts shape these hparams:
+#
+#   1. NemotronH is hybrid Mamba/MoE-MLP/attention. Mamba and attention layers
+#      have no `down_proj`; only the MoE-MLP layers do. The `layers` list
+#      below must therefore only name MLP-bearing layer indices. We pick the
+#      mid-stack range that prior knowledge-editing work (Meng 2022/2023,
+#      Hase 2023) found most factually-anchoring on dense transformers, and
+#      filter to NemotronH's actual MLP-layer positions on the runner side.
+#
+#   2. Each MLP layer is an MoE block with N experts gated by a router. ROME
+#      and MEMIT edit a single `down_proj` matrix; for MoE that means
+#      editing ONE expert's down_proj. Whether the target subject actually
+#      routes through that expert depends on the router. Default below
+#      picks expert 0 as a baseline. To edit all experts, set
+#      `moe_all_experts: true` (the runner wraps the EasyEdit call in a
+#      loop and applies the same edit to every expert in the chosen layer).
+#
+# The first round of empirical testing should sweep `layers` and the
+# `moe_all_experts` flag and pick whichever survives the eval probes in
+# learning/data/lamark_facts.jsonl best. Track results in .ai/research/.
+
+# Which transformer layers to edit. Standard ROME wisdom: mid-stack layers
+# carry the most factual associations. For NemotronH-30B (56 layers total),
+# layers 20-25 are a reasonable starting range. The runner filters this
+# list down to indices that are actually MLP layers (NemotronH alternates).
+layers: [20, 21, 22, 23, 24]
+
+# MoE-aware rewrite-module path. The {} is the layer index (filled by
+# EasyEdit). `{expert}` is the expert index, filled by the runner before
+# the path is handed to EasyEdit. Adjust if NemotronH's HF state dict
+# uses a different attribute name (verify on first run with `state_dict().keys()`).
+rewrite_module_tmp: "model.layers.{}.mlp.experts.{expert}.down_proj"
+
+# Layer at which to compute the covariance matrix (usually the same range
+# as `layers` or one below). EasyEdit uses this for the K* term.
+layer_module_tmp: "model.layers.{}"
+mlp_module_tmp: "model.layers.{}.mlp"
+attn_module_tmp: "model.layers.{}.self_attn"
+ln_f_module: "model.norm"
+lm_head_module: "lm_head"
+
+# MEMIT specifics.
+fact_token: "subject_last"
+v_num_grad_steps: 25
+v_lr: 0.5
+v_loss_layer: 47          # second-to-last layer (NemotronH has 56)
+v_weight_decay: 0.5
+clamp_norm_factor: 0.75
+kl_factor: 0.0625
+mom2_adjustment: true
+mom2_update_weight: 15000
+
+# Covariance estimation (the K* term in the MEMIT update).
+mom2_dataset: "wikipedia"
+mom2_n_samples: 100000
+mom2_dtype: "float32"
+
+# Runner-only flags (consumed by edit_runner.py, NOT by EasyEdit directly).
+moe_all_experts: false
+moe_num_experts: 64        # Nemotron-3-Nano-A3B reportedly has 64 experts (verify on load)
+moe_expert_index: 0        # Which expert to edit when moe_all_experts is false.
+device: 0
+dtype: "bfloat16"
