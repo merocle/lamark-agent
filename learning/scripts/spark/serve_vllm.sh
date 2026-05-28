@@ -19,7 +19,8 @@
 set -euo pipefail
 
 MODEL_DIR="${MODEL_DIR:-$HOME/.lamark/models/hf/nvidia_NVIDIA-Nemotron-3-Nano-4B-BF16}"
-ADAPTER_DIR="${ADAPTER_DIR:-$HOME/.lamark/checkpoints/nemotron-nano-lora/checkpoint-600}"
+# Set ADAPTER_DIR='' (empty) to serve the base model only, no LoRA.
+ADAPTER_DIR="${ADAPTER_DIR-$HOME/.lamark/checkpoints/nemotron-nano-lora/checkpoint-600}"
 VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.21.0}"
 PORT="${PORT:-8765}"
 CONTAINER="${CONTAINER:-lamark-vllm-server}"
@@ -40,7 +41,24 @@ case "$cmd" in
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
     log "Starting $VLLM_IMAGE on port $PORT ..."
     log "  Model   : $MODEL_DIR        served as 'base'"
-    log "  Adapter : $ADAPTER_DIR  served as 'lamark'"
+
+    # Adapter mount + flags are optional. When ADAPTER_DIR is empty we serve
+    # just the base model (e.g., for the 30B which we haven't trained a LoRA for).
+    ADAPTER_OPTS=()
+    if [ -n "$ADAPTER_DIR" ] && [ -d "$ADAPTER_DIR" ]; then
+        log "  Adapter : $ADAPTER_DIR  served as 'lamark'"
+        ADAPTER_OPTS=(
+            -v "$ADAPTER_DIR:/adapter"
+        )
+        VLLM_LORA_ARGS=(
+            --enable-lora
+            --max-lora-rank "$MAX_LORA_RANK"
+            --lora-modules lamark=/adapter
+        )
+    else
+        log "  Adapter : (none — serving base only)"
+        VLLM_LORA_ARGS=()
+    fi
 
     docker run -d \
         --name "$CONTAINER" \
@@ -49,21 +67,20 @@ case "$cmd" in
         --shm-size 8g \
         -p "$PORT:8000" \
         -v "$MODEL_DIR:/model" \
-        -v "$ADAPTER_DIR:/adapter" \
+        "${ADAPTER_OPTS[@]}" \
         "$VLLM_IMAGE" \
         /model \
         --served-model-name base \
-        --enable-lora \
-        --max-lora-rank "$MAX_LORA_RANK" \
-        --lora-modules lamark=/adapter \
+        "${VLLM_LORA_ARGS[@]}" \
         --trust-remote-code \
         --max-model-len "$MAX_MODEL_LEN" \
         --dtype bfloat16 \
         --gpu-memory-utilization 0.85 \
         >/dev/null
 
-    log "Waiting for /health ..."
-    for i in $(seq 1 120); do
+    # 600s = 10 min — enough for the 30B MoE which spends ~6 min loading shards.
+    log "Waiting for /health (up to 10 min) ..."
+    for i in $(seq 1 300); do
         if curl -fsS "http://localhost:$PORT/health" >/dev/null 2>&1; then
             ok "Ready after ${i}s. URL: http://localhost:$PORT/v1"
             ok "Models served: base, lamark"
