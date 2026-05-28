@@ -97,8 +97,14 @@ def run_nemo() -> None:
 
 
 def run_peft_fallback() -> None:
-    """HuggingFace PEFT fallback — no NeMo required; useful for quick iteration."""
-    print("[train_lora] NeMo LLM not found — falling back to HF PEFT (bf16 LoRA).")
+    """HuggingFace PEFT path — the standard route for single-GPU LoRA SFT.
+
+    The NeMo path (run_nemo) is only used when nemo.collections.llm is importable;
+    that typically means the official NeMo NGC container is in use. For small
+    LoRA runs on commodity containers (pytorch:26.01-py3), HF PEFT is the
+    intended path — same adapter format, simpler dependency surface.
+    """
+    print("[train_lora] Using HF PEFT path (bf16 LoRA, single-GPU).")
 
     import torch
     from datasets import Dataset
@@ -142,17 +148,20 @@ def run_peft_fallback() -> None:
         with open(path, encoding="utf-8") as f:
             return [json.loads(line) for line in f if line.strip()]
 
-    def conv_to_text(record: dict) -> str:
-        turns = record.get("conversations", [])
-        parts: list[str] = []
-        for t in turns:
-            role = t.get("role", "")
-            val  = t.get("value", "")
-            parts.append(f"<|{role}|>\n{val}")
-        return "\n".join(parts) + "\n<|end|>"
+    def conv_to_messages(record: dict) -> list[dict]:
+        # Our JSONL uses {role, value}; HF chat templates expect {role, content}.
+        return [{"role": t["role"], "content": t["value"]} for t in record["conversations"]]
 
     def tokenize(record: dict) -> dict:
-        text = conv_to_text(record)
+        # Render via the model's NATIVE chat template (Mistral-style [INST]...[/INST] for NemotronH).
+        # Hand-rolled "<|user|>...<|end|>" templates do not match what the base model
+        # was instruction-tuned on, so they teach the LoRA to fight the prior.
+        text = tok.apply_chat_template(
+            conv_to_messages(record),
+            tokenize=False,
+            add_generation_prompt=False,
+            enable_thinking=False,
+        )
         enc  = tok(text, truncation=True, max_length=2048, padding=False)
         enc["labels"] = enc["input_ids"].copy()
         return enc
@@ -173,16 +182,18 @@ def run_peft_fallback() -> None:
         gradient_accumulation_steps=4,
         bf16=True,
         fp16=False,
-        learning_rate=2e-4,
+        learning_rate=1e-4,
         lr_scheduler_type="cosine",
-        warmup_steps=20,
+        warmup_steps=15,
         weight_decay=0.01,
         eval_strategy="steps",
-        eval_steps=50,
-        save_steps=100,
-        save_total_limit=1,
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
+        eval_steps=20,
+        save_steps=20,
+        save_total_limit=3,
+        # load_best_model_at_end disabled — HF reloads adapter via PEFT, which
+        # hits the same NemotronH WeightConverter('distributed_operation') bug
+        # as validate_adapter's PeftModel.from_pretrained. We pick the best
+        # checkpoint manually post-hoc instead.
         logging_steps=10,
         report_to="none",
         dataloader_num_workers=2,

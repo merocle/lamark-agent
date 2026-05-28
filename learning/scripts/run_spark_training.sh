@@ -27,20 +27,25 @@
 set -euo pipefail
 
 SPARK_HOST="${SPARK_HOST:-jetbrains@10.212.212.1}"
-SPARK_REPO_DIR="${SPARK_REPO_DIR:-\$HOME/lamark-agent}"
+SPARK_REPO_DIR="${SPARK_REPO_DIR:-lamark-agent}"
 SSH_KEY="${SSH_KEY:-}"
 MAX_STEPS="${MAX_STEPS:-200}"
+MODEL_ID="${MODEL_ID:-nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16}"
 SKIP_CLEANUP=0
 SKIP_SETUP=0
+SKIP_DATA=0
+DATASET_DIR="${DATASET_DIR:-}"
 
-for arg in "$@"; do
-    case "$arg" in
-        --skip-cleanup) SKIP_CLEANUP=1 ;;
-        --skip-setup)   SKIP_SETUP=1 ;;
-        --steps)        shift; MAX_STEPS="$1" ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --skip-cleanup) SKIP_CLEANUP=1; shift ;;
+        --skip-setup)   SKIP_SETUP=1; shift ;;
+        --skip-data)    SKIP_DATA=1; shift ;;
+        --dataset)      shift; DATASET_DIR="$1"; SKIP_DATA=1; shift ;;
+        --steps)        shift; MAX_STEPS="$1"; shift ;;
         -h|--help)
             sed -n '2,28p' "$0"; exit 0 ;;
-        *) echo "unknown flag: $arg" >&2; exit 2 ;;
+        *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
 done
 
@@ -77,6 +82,20 @@ scp "${SSH_OPTS[@]}" -r "$SPARK_SCRIPT_DIR/." \
 ok "Scripts synced."
 echo
 
+# Sync custom dataset to Spark if --dataset was passed
+if [ -n "$DATASET_DIR" ]; then
+    if [ ! -f "$DATASET_DIR/train.jsonl" ] || [ ! -f "$DATASET_DIR/val.jsonl" ]; then
+        err "Dataset dir must contain train.jsonl and val.jsonl: $DATASET_DIR"
+        exit 2
+    fi
+    log "Syncing dataset $DATASET_DIR -> $SPARK_HOST:~/.lamark/data/ ..."
+    ssh "${SSH_OPTS[@]}" "$SPARK_HOST" "mkdir -p ~/.lamark/data"
+    scp "${SSH_OPTS[@]}" "$DATASET_DIR/train.jsonl" "$DATASET_DIR/val.jsonl" \
+        "$SPARK_HOST:.lamark/data/"
+    ok "Dataset synced."
+    echo
+fi
+
 SPARK_SCRIPTS="$SPARK_REPO_DIR/learning/scripts/spark"
 
 # ── Step 0: cleanup ──────────────────────────────────────────────────────────
@@ -102,16 +121,19 @@ else
 fi
 
 # ── Step 2: LoRA training ─────────────────────────────────────────────────────
-spark_run "Step 2/4: LoRA SFT training (max_steps=$MAX_STEPS)" bash -c "
+TRAIN_FLAGS=""
+[ "$SKIP_DATA" -eq 1 ] && TRAIN_FLAGS="--skip-data"
+
+spark_run "Step 2/4: LoRA SFT training (max_steps=$MAX_STEPS, flags='$TRAIN_FLAGS')" bash -c "
     chmod +x $SPARK_SCRIPTS/03_train_lora.sh
-    MAX_STEPS=$MAX_STEPS $SPARK_SCRIPTS/03_train_lora.sh
+    MAX_STEPS=$MAX_STEPS MODEL_ID='$MODEL_ID' $SPARK_SCRIPTS/03_train_lora.sh $TRAIN_FLAGS
 "
 echo
 
 # ── Step 3: validation ────────────────────────────────────────────────────────
 spark_run "Step 3/4: validate adapter" bash -c "
     chmod +x $SPARK_SCRIPTS/04_validate.sh
-    $SPARK_SCRIPTS/04_validate.sh
+    MODEL_ID='$MODEL_ID' $SPARK_SCRIPTS/04_validate.sh
 "
 echo
 

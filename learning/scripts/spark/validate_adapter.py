@@ -59,10 +59,12 @@ dev = next(model.parameters()).device
 
 
 def conv_to_text(record: dict) -> str:
-    turns = record.get("conversations", [])
-    return "\n".join(
-        f"<|{t['role']}|>\n{t['value']}" for t in turns
-    ) + "\n<|end|>"
+    # Render with the model's native chat template so PPL is measured on
+    # the same token sequence the model was trained to predict.
+    messages = [{"role": t["role"], "content": t["value"]} for t in record["conversations"]]
+    return tok.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=False, enable_thinking=False
+    )
 
 
 def perplexity(lines: list[str]) -> float:
