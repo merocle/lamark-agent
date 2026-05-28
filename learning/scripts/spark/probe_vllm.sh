@@ -38,6 +38,7 @@ docker run -d \
     /model \
     --served-model-name base \
     --enable-lora \
+    --max-lora-rank 64 \
     --lora-modules lamark=/adapter \
     --trust-remote-code \
     --max-model-len 4096 \
@@ -79,6 +80,18 @@ PROMPTS=(
     "How does Lamark integrate with the knowledge-base service?"
 )
 
+# General-domain regression probes — must not degrade with the adapter.
+# These cover knowledge, arithmetic, coding, and translation; if the adapter
+# answers worse than base on any of these we have catastrophic forgetting.
+GENERAL_PROMPTS=(
+    "What is the capital of France?"
+    "What is 17 times 23?"
+    "Write a Python function that returns the factorial of n. One line."
+    "Explain what a neural network is in one sentence."
+    "Translate to French: 'hello, how are you'."
+    "Sort this list in ascending order: [3, 1, 4, 1, 5, 9, 2, 6]."
+)
+
 query() {
     local model="$1" prompt="$2"
     curl -s -X POST "http://localhost:$PORT/v1/chat/completions" \
@@ -98,11 +111,28 @@ print(json.dumps({
 
 echo
 echo "============================================================================"
+echo "== LAMARK-SPECIFIC PROMPTS (knowledge transfer test) ======================="
+echo "============================================================================"
 for i in "${!PROMPTS[@]}"; do
     n=$((i+1))
     p="${PROMPTS[$i]}"
     echo
     echo "[Q$n] $p"
+    echo "[BASE   ] $(query base    "$p")"
+    echo "[ADAPTER] $(query lamark  "$p")"
+    echo "----------------------------------------------------------------------------"
+done
+
+echo
+echo "============================================================================"
+echo "== GENERAL-DOMAIN REGRESSION CHECK (cross-validation) ======================"
+echo "== Adapter must answer at least as well as base on each.                  =="
+echo "============================================================================"
+for i in "${!GENERAL_PROMPTS[@]}"; do
+    n=$((i+1))
+    p="${GENERAL_PROMPTS[$i]}"
+    echo
+    echo "[G$n] $p"
     echo "[BASE   ] $(query base    "$p")"
     echo "[ADAPTER] $(query lamark  "$p")"
     echo "----------------------------------------------------------------------------"

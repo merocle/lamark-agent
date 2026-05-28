@@ -133,8 +133,8 @@ def run_peft_fallback() -> None:
     # ── LoRA ─────────────────────────────────────────────────────────────
     lora_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
-        r=16,
-        lora_alpha=32,
+        r=64,
+        lora_alpha=128,
         lora_dropout=0.05,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj"],
