@@ -531,6 +531,17 @@ TOOLSETS = {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
         "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
+    },
+
+    # LAMARK-PATCH A.11 — register the ask_cloud toolset so
+    # `validate_toolset("ask_cloud")` succeeds and the tool actually
+    # reaches the agent's tools[] array. Without this entry, the tool
+    # is auto-discovered by the registry but filtered out at
+    # `get_tool_definitions()` time.
+    "ask_cloud": {
+        "description": "Privacy-preserving cloud escalation via LiteLLM proxy",
+        "tools": ["ask_cloud"],
+        "includes": []
     }
 }
 
