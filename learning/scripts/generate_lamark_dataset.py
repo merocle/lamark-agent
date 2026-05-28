@@ -31,8 +31,8 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--out",               default=str(Path.home() / ".lamark/data/lamark_dataset.jsonl"),
-                   help="output JSONL path (default: ~/.lamark/data/lamark_dataset.jsonl)")
+    p.add_argument("--out",               default=str(Path(__file__).parent.parent / "datasets/lamark/lamark_dataset.jsonl"),
+                   help="output JSONL path (default: learning/datasets/lamark/lamark_dataset.jsonl)")
     p.add_argument("--examples-per-batch", type=int, default=20,
                    help="Q&A pairs per API call (default: 20)")
     p.add_argument("--batches-per-topic", type=int, default=5,
