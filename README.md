@@ -57,11 +57,35 @@ slow, real learning that compounds.
 
 ---
 
+## Smart routing & cloud escalation
+
+A 35B local model confabulates instead of admitting ignorance, so Lamark
+routes on the **question's intent** (a robust classification task) rather
+than the model's self-confidence. Every incoming message is triaged
+(cheap regex → local-LLM classifier) before the agent answers:
+
+- **Factual** ("when was X born", "what is Y") → a `web_search` is run and
+  injected as grounding; the model answers **only from the results**, never
+  from its weights. This is the anti-confabulation guarantee.
+- **Hard reasoning** (research-level proofs/derivations, deep expertise)
+  → the model is directed to call `ask_cloud`, which delegates to a stronger
+  cloud model (Claude / GPT / Gemini) through your LiteLLM proxy. You
+  approve each call in Telegram before anything leaves the box, PII is
+  redacted, and every call is logged to `~/.lamark/cloud_calls.jsonl`.
+- **Personal / casual / code** → answered locally.
+
+The privacy default is local; the cloud is reached only on an explicit
+request or a genuinely-hard question, and only after your ✅. You can also
+switch models manually in Telegram with `/model` (local `lamark`, base
+`qwen-base`, or any curated cloud model).
+
+---
+
 ## Hardware tiers
 
 | Tier | Hardware | Default model | Status |
 |---|---|---|---|
-| **S** | DGX Spark, A100 80GB, H100 | Qwen3.6-35B-A3B MoE (67 GB) | **verified** |
+| **S** | DGX Spark, A100 80GB, H100 | Qwen3.6-35B-A3B MoE, FP8 (~35 GB) | **verified** |
 | **M** | RTX 4090 24GB, 5090 32GB, A100 40GB | Qwen3.6-14B dense (28 GB) | experimental |
 | **L** | RTX 3090, 4080, A4000 | Qwen3.6-7B dense (15 GB) | experimental |
 | **XS** | RTX 4060, Mac M-series | Qwen2.5-1.5B (3 GB, mostly for tests) | experimental |
@@ -109,15 +133,31 @@ User config lives at `~/.lamark/hermes-home/config.yaml`. Common knobs:
 
 ```yaml
 model:
-  default: qwen-3.6-35b-a3b-moe   # which model to serve (registry name)
-  provider: lm-studio              # transport for the OpenAI-compat /v1 surface
+  default: lamark                  # served alias: FP8 base + current LoRA adapter
+  provider: custom                 # reads base_url directly (no env-var dance)
   base_url: http://127.0.0.1:8000/v1
-  context_length: 65536            # override the model's reported context (Hermes minimum: 64K)
+  context_length: 131072           # 128K
 
 training:
-  frequency: daily                 # daily / weekly / manual
   min_pairs: 50                    # don't retrain unless this many new pairs accumulated
+
+triage:
+  enabled: true                    # question-intent routing (web grounding / cloud escalation)
+  model: lamark                    # local model used for the cheap classification pass
+
+custom_providers:
+  - name: lamark-local             # the local vLLM (qwen-base + lamark adapter)
+    base_url: http://127.0.0.1:8000/v1
+providers:
+  litellm-cloud:                   # curated cloud models for ask_cloud + /model
+    base_url: https://your-litellm-proxy/v1
+    key_env: LITELLM_API_KEY
+    discover_models: false
+    models: [openai/gpt-5.5, anthropic/claude-opus-4-5, ...]
 ```
+
+Secrets (`TELEGRAM_BOT_TOKEN`, `LITELLM_API_KEY`, `TAVILY_API_KEY`) live in
+`~/.lamark/hermes-home/.env`, never in `config.yaml`.
 
 Edit live via the CLI:
 
@@ -142,6 +182,11 @@ confidence=0.5 — implicit positive signal)
        ↓
 systemd --user timer `lamark-trainer.timer` fires on its schedule
 (configured via `lamark train --schedule "..."`, default nightly 3am)
+       ↓
+Curation: regex pre-kill of debug noise → local-LLM judge keeps only
+good-behaviour pairs (cached) → synthetic bootstrap data decays as real
+conversations accumulate. (You can also trigger a run from Telegram —
+"retrain now" → the `train_now` tool shows a downtime-warning card.)
        ↓
 lamark-nightly-train.sh checks: do we have >= min_pairs new content?
        ↓ yes                       ↓ no
@@ -199,11 +244,11 @@ production lives on the box with the GPU.
   remained up but SSH/Tailscale stopped responding for ~20 minutes
   before vLLM finally crashed and freed memory). `lamark serve stop`
   first, then upgrade, then `lamark serve start`.
-- **Default `max_model_len` is 32768** for tier S. The Hermes Agent
-  minimum of 64K is satisfied via an in-memory accounting override in
-  the config — not by allocating an actual 65K KV cache, which would
-  consume ~10 GB extra unified memory on Spark and increase the risk
-  of the above pressure event.
+- **Default `max_model_len` is 131072 (128K)** for tier S on the FP8
+  base — the quantized weights free up enough unified memory to run the
+  full window comfortably (with `gpu_memory_utilization: 0.45` and
+  `--max-num-seqs 128`). The BF16 entry is retained in the registry as a
+  conservative fallback.
 - **`lamark logs vllm`** is your friend when something feels slow.
   Repeated `systemd-journald: Under memory pressure, flushing caches.`
   in your kernel log is the canary.
@@ -236,10 +281,17 @@ disk-encryption layer, that's enough for now.
 - ✅ One-command installer (`install.sh`)
 - ✅ Model registry + hardware tier dispatch (Spark / 4090 / 3090 / Mac)
 - ✅ Unified `lamark` CLI (setup / chat / serve / status / switch-base / config / train / logs)
-- ✅ Hybrid retrain trigger (frequency × min_pairs threshold)
 - ✅ L1 identity via chat_template, verified portable across vLLM versions
 - ✅ L2 cross-session memory via Hermes
-- ✅ Upstream `vllm/vllm-openai:v0.21.0` for serving (no custom image needed)
+- ✅ Upstream `vllm/vllm-openai:v0.21.0`, FP8 quant (~52 tok/s on Spark)
+- ✅ Auto pair-capture from Telegram + nightly LoRA trainer (systemd timer,
+  user-tunable schedule, Telegram notifications on promote/reject)
+- ✅ Local-model curation before training (debug-noise drop + synthetic decay)
+- ✅ Question-intent triage: factual → mandatory web grounding,
+  hard reasoning → cloud escalation
+- ✅ `ask_cloud` — privacy-preserving cloud escalation via LiteLLM, with
+  per-call Telegram approval + redaction + audit log
+- ✅ On-demand retrain from chat (`train_now`, downtime-warning card)
 
 **Phase 2 (beta, ~weeks):**
 - Resumable HF model downloads (67 GB can't tolerate a flaky connection)
@@ -266,11 +318,18 @@ MIT. Lamark vendors **Hermes Agent** by [Nous Research](https://nousresearch.com
 | Patch | What it does |
 |---|---|
 | A.2 | Rebrand Hermes → Lamark in user-visible strings |
-| A.3 | Redaction pipeline for secrets in archive/memory |
+| A.3 | Redaction gate — block secrets before they reach memory/skills |
 | A.4 | Archive mirror — memory writes also land in the training archive |
-| A.6 | License banner |
 | A.7 | launchd plist env injection (macOS gateway) |
 | A.8 | systemd unit env injection (Linux gateway) |
 | A.9 | Auto pair-capture hook on Telegram message completion |
+| A.10 | `ask_cloud` — privacy-preserving cloud escalation via LiteLLM |
+| A.11 | Register `ask_cloud` / `train_now` toolsets so they reach the agent |
+| A.12 | Gateway-correct blocking approval (Telegram ✅/❌ card) |
+| A.13 | Question-intent triage hook (web grounding / cloud escalation) |
+| A.14 | `train_now` — on-demand retrain from chat with a downtime card |
 
-Full attribution preserved in `LICENSE` and `vendor/hermes/UPSTREAM.md`.
+The full, authoritative change log (touched files + rationale per patch,
+plus the `src/lamark/` layer and serving/infra deltas) lives in
+[`vendor/hermes/MODIFICATIONS.md`](vendor/hermes/MODIFICATIONS.md).
+Attribution preserved in `LICENSE` and `vendor/hermes/UPSTREAM.md`.
