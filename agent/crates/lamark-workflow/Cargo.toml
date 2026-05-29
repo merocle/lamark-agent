@@ -1,0 +1,23 @@
+[package]
+name         = "lamark-workflow"
+version      = "0.1.0"
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lamark-core        = { path = "../lamark-core" }
+lamark-coordinator = { path = "../lamark-coordinator" }
+lamark-sandbox     = { path = "../lamark-sandbox" }
+lamark-tools       = { path = "../lamark-tools" }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+tokio              = { workspace = true }
+uuid               = { workspace = true }
+chrono             = { workspace = true }

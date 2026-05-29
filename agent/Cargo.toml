@@ -8,6 +8,7 @@ members = [
     "crates/lamark-tools",
     "crates/lamark-sandbox",
     "crates/lamark-hooks",
+    "crates/lamark-harness",
     "crates/lamark-trace",
     "crates/lamark-prompt",
     "crates/lamark-cache",
@@ -22,6 +23,7 @@ members = [
     "crates/lamark-remote",
     "crates/lamark-policy",
     "crates/lamark-coordinator",
+    "crates/lamark-workflow",
     "crates/lamark-protocol",
     "crates/lamark-test-utils",
 ]

@@ -10,5 +10,8 @@ repository.workspace   = true
 workspace = true
 
 [dependencies]
-thiserror = { workspace = true }
-serde     = { workspace = true }
+thiserror  = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+uuid       = { workspace = true }
+chrono     = { workspace = true }

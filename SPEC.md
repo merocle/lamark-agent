@@ -220,12 +220,16 @@ The runtime is sliced into eight layers. Each has its own plan file in [`docs/pl
 | 6a | **Memory + knowledge-base** | `docs/plan/07a-layer-6-memory-and-kb.md` | Memory providers (KB default + Honcho/Mem0/Hindsight/SQLite); KB client. |
 | 7 | **Skills + plugins + Curator** | `docs/plan/08-layer-7-skills-plugins-curator.md` | Markdown skills, dynamic plugins (WASM + dylib), Curator background agent. |
 | 8 | **Gateway + MCP + ACP + integrations** | `docs/plan/09-layer-8-gateway-integrations.md` | Long-running messaging gateway; MCP client+server; ACP. |
+| 9 | **Dynamic workflow engine** | `docs/plan/05e-dynamic-workflows.md` | Model writes an orchestration plan on the fly; engine executes with parallel subagent fleet (inspired by Claude Code research-preview "dynamic workflows"). |
 
-Plus two cross-cutting:
+Plus cross-cutting:
 
 | Plan file | Topic |
 |---|---|
 | `docs/plan/10-training-pipeline.md` | Python training pipeline (nightly SFT, weekly DPO, monthly merge). |
+| `docs/plan/10c-dataset-from-codebase.md` | InferredBugs × paraphrase dataset from git history. |
+| `docs/plan/10d-skillopt-life-harness.md` | SkillOpt + LIFE-HARNESS + MUSE skill lifecycle spec. |
+| `docs/plan/10e-workflow-training-dataset.md` | Dataset to train dynamic workflow planning behaviour. |
 | `docs/plan/11-build-test-deploy.md` | Cargo workspace, CI, packaging, docker images, release process. |
 
 ---

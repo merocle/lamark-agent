@@ -5,5 +5,10 @@
 //! imports from a sibling crate.
 
 mod error;
+pub mod harness;
+pub mod ids;
+pub mod message;
+pub mod tool;
+pub mod turn;
 
 pub use error::{Error, Result};

@@ -10,4 +10,9 @@ repository.workspace   = true
 workspace = true
 
 [dependencies]
-lamark-core = { path = "../lamark-core" }
+lamark-core  = { path = "../lamark-core" }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+tokio        = { workspace = true }
