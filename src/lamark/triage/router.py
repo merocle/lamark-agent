@@ -42,23 +42,23 @@ _WEB_UNAVAILABLE = (
     "names as certain — flag that you could not verify them."
 )
 
-# Imperative, not a suggestion. The model is biased to answer locally and
-# ignores soft nudges; for genuinely-hard questions we DIRECT it to escalate.
-# A true router-side ask_cloud call can't run here — the gateway approval
-# callback is only registered once the agent run starts (run.py:16779),
-# after this hook. So the working path is: force the model to call
-# ask_cloud as its first action; ask_cloud (inside the agent) then surfaces
-# the Telegram approval card correctly.
-_REASONING_FORCE = (
-    "[TRIAGE: this question needs deeper reasoning than you reliably provide "
-    "locally.]\n"
-    "Your FIRST action MUST be to call the ask_cloud tool. Pick the model: "
-    "claude-opus-4-5 for hard proofs / math / derivations, otherwise "
-    "claude-sonnet-4-6. Pass the user's question (reformulated, self-contained) "
-    "as the task. Do NOT answer from your own knowledge first — you are likely "
-    "to confabulate on this. The user approves the cloud call before anything "
-    "leaves the box. After the cloud responds, present and refine its answer, "
-    "attributing it."
+# Escalation directive PREPENDED TO THE USER MESSAGE TEXT — not the system
+# prompt. Empirically the local model ignores an imperative in channel_prompt
+# (it confidently answered an Einstein-field-equations derivation locally
+# despite a "MUST call ask_cloud first" system directive) but reliably obeys
+# an EXPLICIT user-side request to use the cloud ("спроси claude" → ask_cloud
+# fires + approval card shows, every time). So we synthesise that working
+# explicit request and inject it into event.text. ask_cloud then runs inside
+# the agent where the gateway approval callback is registered (run.py:16779),
+# surfacing the Telegram ✅/❌ card correctly.
+#
+# Model choice: needs_cloud is reserved (post-tightening) for genuinely hard
+# tasks, so default to the strongest — claude-opus-4-5.
+_ESCALATE_PREFIX = (
+    "[Этот вопрос сложный — НЕ отвечай из своих знаний, ты вероятно "
+    "ошибёшься. Вызови инструмент ask_cloud с моделью claude-opus-4-5, "
+    "передав вопрос ниже как task. Когда облако ответит — перескажи и "
+    "уточни его ответ.]\n\n"
 )
 
 
@@ -139,8 +139,12 @@ def apply(event, *, model: str = "lamark") -> None:
         if intent == "factual" or result.get("needs_web"):
             _ground_factual(event)
         elif result.get("needs_cloud"):
-            _set_prompt(event, _REASONING_FORCE.strip())
-            logger.info("triage: reasoning escalation directive injected")
+            # Prepend an explicit cloud-escalation request to the user text —
+            # the reliable path (see _ESCALATE_PREFIX rationale). Guard against
+            # double-prefixing if the event somehow re-enters.
+            if not event.text.startswith("[Этот вопрос сложный"):
+                event.text = _ESCALATE_PREFIX + event.text
+            logger.info("triage: cloud escalation injected into user text")
         # reasoning(local) / personal / casual / code / explicit_cloud /
         # unknown → no-op (local answers)
     except Exception as exc:  # noqa: BLE001 — never break a turn

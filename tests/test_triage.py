@@ -136,33 +136,37 @@ def test_empty_web_results_injects_caveat(monkeypatch):
 
 # ── router: reasoning → ask_cloud nudge ─────────────────────────────
 
-def test_needs_cloud_forces_ask_cloud(monkeypatch):
-    # needs_cloud=True → imperative escalation directive.
+def test_needs_cloud_injects_escalation_into_text(monkeypatch):
+    # needs_cloud=True → explicit ask_cloud request prepended to event.text
+    # (the reliable path; channel_prompt directives get ignored by the model).
     monkeypatch.setattr(R, "classify",
                         lambda t, **k: {"intent": "reasoning", "needs_web": False, "needs_cloud": True})
     ev = _FakeEvent(text="выведи уравнения поля Эйнштейна")
     R.apply(ev, model="lamark")
-    assert "ask_cloud" in (ev.channel_prompt or "")
-    assert "FIRST action MUST" in ev.channel_prompt
+    assert "ask_cloud" in ev.text
+    assert "claude-opus-4-5" in ev.text
+    assert ev.text.rstrip().endswith("выведи уравнения поля Эйнштейна")
+
+
+def test_needs_cloud_not_double_prefixed(monkeypatch):
+    monkeypatch.setattr(R, "classify",
+                        lambda t, **k: {"intent": "reasoning", "needs_web": False, "needs_cloud": True})
+    ev = _FakeEvent(text="hard q")
+    R.apply(ev, model="lamark")
+    once = ev.text
+    R.apply(ev, model="lamark")  # second pass must not stack prefixes
+    assert ev.text == once
 
 
 def test_reasoning_without_needs_cloud_stays_local(monkeypatch):
-    # A standard proof: intent reasoning but needs_cloud=False → no directive,
-    # local answers (the √2 case the local model handles fine).
+    # A standard proof: intent reasoning but needs_cloud=False → no escalation,
+    # text untouched, local answers (the √2 case the local model handles fine).
     monkeypatch.setattr(R, "classify",
                         lambda t, **k: {"intent": "reasoning", "needs_web": False, "needs_cloud": False})
     ev = _FakeEvent(text="докажи что корень из двух иррационален")
     R.apply(ev, model="lamark")
+    assert ev.text == "докажи что корень из двух иррационален"
     assert ev.channel_prompt is None
-
-
-def test_needs_cloud_preserves_existing_channel_prompt(monkeypatch):
-    monkeypatch.setattr(R, "classify",
-                        lambda t, **k: {"intent": "reasoning", "needs_web": False, "needs_cloud": True})
-    ev = _FakeEvent(text="hard q", channel_prompt="EXISTING")
-    R.apply(ev, model="lamark")
-    assert ev.channel_prompt.startswith("EXISTING")
-    assert "ask_cloud" in ev.channel_prompt
 
 
 # ── router: no-op paths ─────────────────────────────────────────────
