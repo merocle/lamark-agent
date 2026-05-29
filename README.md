@@ -6,8 +6,8 @@
 > every conversation, and bakes what it learns straight into its own model
 > weights — overnight, with no data ever leaving the box unless you say so.
 
-**Status: alpha.** Verified end-to-end on DGX Spark. Consumer-GPU tiers
-(4090/5090/3090) are wired in and coming in Phase 2.
+**Status: alpha — actively developed.** See [hardware tiers](#hardware-tiers)
+below for what it runs on.
 
 ---
 
@@ -25,11 +25,10 @@ tokens, JWTs) anywhere, even to your own disk.
 after **Jean-Baptiste Lamarck**, whose idea that acquired traits are
 inherited is wrong for biology but exactly right here: every night Lamark
 curates the day's conversations and trains a fresh LoRA adapter on them.
-What you taught it today becomes part of how it thinks tomorrow — a real
+What you teach it today becomes part of how it thinks tomorrow — a real
 parameter update, gated by an automatic quality check, with a notification
-when a new version of *your* model goes live. The longer you use it, the
-more of your context and voice it carries forward — by design, the model
-you talk to next month is shaped by the conversations you have this one.
+when a new version of *your* model goes live. Every night it wakes up a
+little more yours.
 
 **Cloud is a tool it reaches for, not a place it lives.** When a question
 genuinely needs more than the local model — deep reasoning, current facts —
