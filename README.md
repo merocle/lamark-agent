@@ -1,16 +1,41 @@
 # Lamark
 
-> A locally-hosted personal AI agent that learns about you over time and
-> bakes accumulated context into its own model weights — overnight, on
-> your own hardware.
+> **Your AI. On your hardware. Getting smarter about you every night.**
+>
+> A personal AI agent that runs entirely on machines you own, learns from
+> every conversation, and bakes what it learns straight into its own model
+> weights — overnight, with no data ever leaving the box unless you say so.
 
-**Status: alpha.** Verified on two independent DGX Spark hosts. Not yet tested
-on consumer NVIDIA GPUs (4090/5090/3090) — coming in Phase 2.
+**Status: alpha.** Verified end-to-end on DGX Spark. Consumer-GPU tiers
+(4090/5090/3090) are wired in and coming in Phase 2.
 
-Named after **Jean-Baptiste Lamarck**, whose theory of inheritance of
-acquired characteristics is rejected in biology but precisely describes
-what this agent does: traits it picks up during conversations with you
-become part of the next generation of its weights.
+---
+
+## Why Lamark
+
+**Local-first, not local-only-in-the-marketing-sense.** Lamark lives on
+your hardware — a box in your home, your account, your disk. There are no
+cloud accounts to sign into, no shared inference endpoint, no telemetry.
+Your conversations, your memory, and your training data are plain files
+under `~/.lamark/` that never leave the machine by default. A redaction
+gate refuses — unconditionally — to write verified secrets (API keys,
+tokens, JWTs) anywhere, even to your own disk.
+
+**It actually learns — in its weights, not just a vector store.** Named
+after **Jean-Baptiste Lamarck**, whose idea that acquired traits are
+inherited is wrong for biology but exactly right here: every night Lamark
+curates the day's conversations and trains a fresh LoRA adapter on them.
+What you taught it today becomes part of how it thinks tomorrow — a real
+parameter update, gated by an automatic quality check, with a notification
+when a new version of *your* model goes live. The longer you use it, the
+more of your context and voice it carries forward — by design, the model
+you talk to next month is shaped by the conversations you have this one.
+
+**Cloud is a tool it reaches for, not a place it lives.** When a question
+genuinely needs more than the local model — deep reasoning, current facts —
+Lamark can escalate: web-search grounding for facts, or a stronger cloud
+model for hard reasoning. But it asks first, redacts what it sends, and
+logs every call. The default is, and stays, local.
 
 ---
 
