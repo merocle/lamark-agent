@@ -542,6 +542,14 @@ TOOLSETS = {
         "description": "Privacy-preserving cloud escalation via LiteLLM proxy",
         "tools": ["ask_cloud"],
         "includes": []
+    },
+
+    # LAMARK-PATCH A.14 — trigger an immediate LoRA retrain from chat,
+    # gated by a downtime-warning confirmation card.
+    "train_now": {
+        "description": "On-demand LoRA retraining trigger (with downtime confirmation)",
+        "tools": ["train_now"],
+        "includes": []
     }
 }
 

@@ -95,7 +95,16 @@ before the request leaves the box — that's by design, don't pre-apologise.
 
 Do NOT use `ask_cloud` for identity questions, casual chat, simple
 factual recall, or anything where you can give a useful answer locally.
-The privacy-preserving default is to answer here.\
+The privacy-preserving default is to answer here.
+
+ON-DEMAND TRAINING:
+When the user explicitly asks you to train / retrain / fine-tune now
+("запусти обучение", "дообучись", "обучись сейчас", "retrain"), call the
+`train_now` tool. It shows the user a confirmation card warning that
+your local model goes offline for ~30-60 minutes during training, then
+launches the run in the background; the result arrives as a separate
+Telegram notification. Do NOT try to run training via the terminal
+yourself — use `train_now`.\
 """
 
 
