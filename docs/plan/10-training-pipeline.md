@@ -6,7 +6,7 @@
 
 **Code location:** sibling project `~/lamark-trainer/` (not in this cargo workspace).
 **Data location:** `~/.lamark/training/` (mirrors hermes operational layout).
-**Reference:** `~/Downloads/setup-guide (2).md` (Parts 1–4) — operational truth; this file is the project-side spec.
+**Reference:** `setup-guide.md` (Parts 1–4; also in `~/Downloads/`) — operational truth for the nightly runbook; this file is the project-side spec. Additional context: `compass_artifact_wf-71178c8c` (Nemotron-3-Nano architecture + DGX Spark deployment), `compass_artifact_wf-9b64b930` (Qwen3 family fine-tuning on 12 GB RTX). For the codebase-extraction + RL-task pipeline, see [`plan/10c`](./10c-dataset-from-codebase.md).
 
 ## Why Python here, Rust elsewhere
 
@@ -25,6 +25,9 @@ Unsloth, Megatron-Bridge, TRL, DeepSpeed, transformers, datasets, peft — the t
    │   - pr_ingest                              →  /raw/pr.jsonl       │
    │   - youtrack_ingest / jira_ingest          →  /raw/issue.jsonl    │
    │   - slack_ingest                           →  /raw/slack.jsonl    │
+   │   - codebase_extract --since=yesterday     →  /raw/codebase.jsonl │
+   │     (static-analysis bug-fix pairs; see plan/10c)                 │
+   │   - mr_enrich (enriches codebase.jsonl in-place)                  │
    │                                                                   │
    │ T+0:30  redact stage-1 (secrets)                                  │
    │   - gitleaks + trufflehog + detect-secrets                        │
@@ -39,6 +42,11 @@ Unsloth, Megatron-Bridge, TRL, DeepSpeed, transformers, datasets, peft — the t
 │     conversation.jsonl directly (reasoning stripped per plan/06)   │
 │   - compacted sessions split at CompactionMarker boundary          │
 │   - git/PR/issue/slack sources: converters in transform/           │
+   │                                                                   │
+   │ T+1:15  teacher traces for codebase pairs (plan/10c Phase 3)      │
+   │   - teacher_trace.py --teacher glm-4.6                           │
+   │   - three-stage filter: bad verifier → env stability → difficulty │
+   │   - output: /raw/codebase_sft.jsonl (Nemotron-Agentic-v1)        │
    │                                                                   │
    │ T+1:30  curate (optional; gated on teacher budget)                │
    │   - OSS-Instruct seeds                                            │
@@ -91,11 +99,15 @@ lamark-trainer/
 │   ├── cli.py                           # `lamark-train` entry
 │   ├── connectors/
 │   │   ├── lamark_trace.py              # reads ~/.lamark/traces/ + KB
-│   │   ├── git_mining.py
-│   │   ├── pr_ingest.py
+│   │   ├── git_mining.py                # OctoPack-style commit→instruction
+│   │   ├── pr_ingest.py                 # PR diffs as search/replace trajectories
 │   │   ├── youtrack_ingest.py
 │   │   ├── jira_ingest.py
-│   │   └── slack_ingest.py
+│   │   ├── slack_ingest.py
+│   │   ├── codebase_extract.py          # Phase 1: static-analysis bug-fix pairs (plan/10c)
+│   │   ├── mr_enrich.py                 # Phase 2: MR/PR trajectory enrichment (plan/10c)
+│   │   ├── teacher_trace.py             # Phase 3: GLM-4.6 teacher traces → SFT (plan/10c)
+│   │   └── rl_task_build.py             # Phase 4: task triplets + GRPO groups (plan/10c)
 │   ├── redact/
 │   │   ├── stage1_secrets.py
 │   │   ├── stage2_pii.py
@@ -130,7 +142,8 @@ lamark-trainer/
 │   │   ├── unsloth_lora.py              # Qwen3/Gemma4
 │   │   ├── megatron_bridge.py           # Nemotron-3-Nano
 │   │   ├── eager_load_patch.py          # DGX Spark UMA fix
-│   │   └── dpo.py                       # weekly
+│   │   ├── dpo.py                       # weekly
+│   │   └── grpo.py                      # Tier 3 (v0.2+); NeMo RL / TRL GRPO
 │   ├── eval/
 │   │   ├── gold_set/
 │   │   ├── benchmarks/
@@ -304,41 +317,242 @@ reset_on_consecutive_passes          = 3   # revert bumps after N consecutive cl
 
 ## Training
 
-Two paths, both ingest the same packed parquet. A third path — RL (GRPO) — is activated after SFT produces a competent adapter; see [`plan/07b §Loop D`](./07b-prompt-self-improvement.md#loop-d--rl-phase-guided-then-grpo-post-sft-bootstrapping).
+### Tier decision matrix
 
-**Key training research:**
-- SFT loop = STaR (arXiv 2203.14465) + ReST (arXiv 2308.08998) + ReST-meets-ReAct (arXiv 2312.10003)
-- RL phase = DeepSeek-R1 GRPO (arXiv 2501.12948) + Agent-RLVR (arXiv 2506.11425)
-- Verifier = V-STaR (arXiv 2402.06457) joint generator+verifier training
-- Error recovery training = Fission-GRPO (arXiv 2601.15625)
-- Step-level reward = PRM "Let's Verify Step by Step" (arXiv 2305.20050)
+Choose the training tier based on what data you have and what you want to change. Always start from Tier 1; escalate only when needed.
 
-### Unsloth path (Qwen3 / Gemma4)
+| Tier | Method | When to use | Hardware (single Spark) | Scope in Lamark |
+|---|---|---|---|---|
+| **0 — CPT** | Continued pre-training on BASE model; LoRA r=128 + `embed_tokens`/`lm_head`; ~5% pretrain replay | Raw domain text > 50 MB that can't be expressed as Q&A pairs | ~24 h+; only viable for small models (≤8B) on Spark BF16 | Skip in 99% of cases; only if domain knowledge genuinely can't be injected via SFT |
+| **1 — SFT LoRA** | LoRA r=16–32 on INSTRUCT checkpoint; 70/20/10/5 blend; `assistant_only_loss=True` | Nightly cycle; capability injection from traces + git/PR/issue/Slack | ~5–6 h | Primary tier; runs every night |
+| **2 — DPO** | LoRA r=16 on top of promoted SFT adapter; `β=0.1`, `lr=5e-6`; preference pairs | Weekly (Sundays); alignment polish; reduces refusals/hallucinations | ~2 h | Weekly cycle |
+| **3 — GRPO/RLVR** | Synchronous GRPO with task verifiers; NeMo RL (Nemotron) or TRL GRPO (Qwen3.6) | v0.2+ once SFT cycle is stable and NeMo Gym environments are wired | Single Spark possible but slower than SFT | Not in v0.1 scope |
+| **4 — Full weight FT** | All parameters; Megatron-Bridge TP=2, EP=8, PP=1; AdamW | Never in the nightly cycle; only from-scratch reproductions | Not viable: 30B+ MoE exceeds Spark's 128 GB UMA including optimizer states | Out of v0.1 scope permanently |
+
+**The instinct to reach for full FT or GRPO early is the most common mistake.** Most capability gains come from better SFT data, not a more powerful training algorithm. Fix the data before touching the tier.
+
+---
+
+### Tier 0 — CPT (skip unless truly needed)
+
+For the rare case where you have a large unseen raw corpus (internal documentation, proprietary codebases, domain-specific pre-training text > 50 MB):
 
 ```python
-from unsloth import FastModel
+# Stage 1: CPT on BASE model only
 model, tokenizer = FastModel.from_pretrained(
-    model_name="Qwen/Qwen3.6-35B-A3B",
+    model_name="Qwen/Qwen3.6-35B-A3B",   # BASE, not instruct
     max_seq_length=4096,
     load_in_16bit=True,
     full_finetuning=False,
 )
-# rank 32, alpha 64, lr 1e-4
-# target = q/k/v/o + gate/up/down + (MoE-specific) expert_gate
+model = FastModel.get_peft_model(
+    model, r=128, lora_alpha=128,          # high rank for CPT
+    target_modules=["q_proj","k_proj","v_proj","o_proj",
+                    "gate_proj","up_proj","down_proj"],
+    use_gradient_checkpointing="unsloth",
+)
+# Enable embed + lm_head only for CPT; NEVER for SFT
+model.enable_input_require_grads()
+model.get_input_embeddings().requires_grad_(True)
+model.lm_head.requires_grad_(True)
+# ~5% pretrain-style replay mixed in; LR 1e-4, 1-3 epochs
 ```
 
-### Megatron-Bridge path (Nemotron-3-Nano)
+Then proceed to Tier 1 SFT on the INSTRUCT checkpoint (NOT the CPT checkpoint). The CPT checkpoint is discarded after the SFT run; its purpose was only to inject raw domain tokens into the base before instruct alignment.
+
+---
+
+### Tier 1 — SFT LoRA (nightly)
+
+**Non-negotiable settings (apply to all models):**
+- `load_in_4bit=False` for MoE models (Qwen3.6, Nemotron); use `load_in_16bit=True` (bf16)
+- `load_in_4bit=True` only for dense ≤8B (Qwen3-4B, Gemma4-9B)
+- `assistant_only_loss=True` or Unsloth's `train_on_responses_only` — mandatory for multi-turn; adds ~1 pp and prevents the model from learning to predict user/system tokens
+- Never tune `lm_head` or `embed_tokens` during SFT
+- Never tune the MoE router weights (Qwen3.6 `router`, Nemotron shared/routed expert routing)
+- `α = r` (Unsloth default, conservative) or `α = 2r` (aggressive); never arbitrary values
+
+**Per-model hyperparameter table:**
+
+| Model | r / α | Target modules | max_seq | Epochs | LR | Peak VRAM on Spark |
+|---|---|---|---|---|---|---|
+| Qwen3.6-35B-A3B | 32 / 32 | `q_proj,k_proj,v_proj,o_proj,in_proj,out_proj,gate_proj,up_proj,down_proj` | 4096 | 1–2 | 1e-4 | ~72 GB bf16 |
+| Nemotron-3-Nano | 32 / 32 | `q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj` (skip router) | 4096 | 1–2 | 1e-4 | ~70–80 GB bf16 |
+| Gemma4-27B | 32 / 32 | `q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj` | 2048 | 1–2 | 1e-4 | ~60 GB bf16 |
+| **Qwen3.5-9B** (dense) | 32 / 32 | verify via `model.named_modules()` — DeltaNet layers have different names than attn | 4096 | 1–2 | 2e-4 | ~11 GB 4-bit |
+| **Qwen3.5-4B** (dense) | 32 / 32 | same — verify DeltaNet target names before run | 4096 | 1–2 | 2e-4 | ~7–9 GB 4-bit |
+| **Qwen3.5-2B** (dense) | 16–32 / =r | verify DeltaNet target names | 4096 | 2–3 | 2e-4 | ~4–5 GB 4-bit |
+| **Qwen3.5-0.8B** (dense; MTP) | 16 / 16 | verify DeltaNet target names | 4096 | 2–3 | 2e-4 | ~2–3 GB 4-bit |
+
+> **Qwen3.5 DeltaNet note:** always run `print([n for n,_ in model.named_modules()])` before setting `target_modules`. The SSM (DeltaNet) layers use projection names like `in_proj`, `out_proj`, or similar — they differ from standard Transformer `q_proj`/`k_proj`. Passing wrong names silently trains only the attention layers. Unsloth may auto-detect them; confirm with `model.print_trainable_parameters()` after `get_peft_model()`.
+
+> **4-bit is safe for Qwen3.5 dense models** (unlike Qwen3.6 MoE where it OOMs). Use `load_in_4bit=True` for ≤9B. The Qwen3.5 architecture uses the same quantization sensitivity profile as Qwen3 dense models (not MoE).
+
+**Rank guidance:** 16 is the safe default (Biderman et al. TMLR 2024: lower rank forgets ~9 pp less than higher rank). Increase to 32 only if validation loss plateaus. DoRA (`use_dora=True`) adds +0.3–4 pp especially at low ranks; rsLoRA (`use_rslora=True`) only helps at r ≥ 64.
+
+**SFT LoRA snippet (Qwen3.6-35B-A3B, Unsloth path):**
+
+```python
+from unsloth import FastModel
+from trl import SFTTrainer, SFTConfig
+
+model, tokenizer = FastModel.from_pretrained(
+    model_name="/models/qwen36",
+    max_seq_length=4096,
+    load_in_4bit=False,
+    load_in_16bit=True,      # bf16; QLoRA explicitly NOT supported for qwen3_5_moe
+    full_finetuning=False,
+)
+model = FastModel.get_peft_model(
+    model, r=32, lora_alpha=32,   # α = r (Unsloth recommendation)
+    target_modules=[
+        "q_proj","k_proj","v_proj","o_proj",
+        "in_proj","out_proj",            # Qwen3.6 MoE expert projections
+        "gate_proj","up_proj","down_proj",
+    ],
+    use_gradient_checkpointing="unsloth",
+    random_state=3407,
+)
+trainer = SFTTrainer(
+    model=model, tokenizer=tokenizer,
+    train_dataset=train_ds, eval_dataset=eval_ds,
+    args=SFTConfig(
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=16,  # eff bs=16
+        warmup_ratio=0.05,
+        num_train_epochs=1,
+        learning_rate=1e-4,
+        lr_scheduler_type="cosine",
+        optim="adamw_8bit",
+        weight_decay=0.01,
+        max_seq_length=4096,
+        assistant_only_loss=True,        # NON-NEGOTIABLE
+        bf16=True,
+        eval_strategy="steps", eval_steps=100,
+        load_best_model_at_end=True,
+    ),
+)
+trainer.train()
+```
+
+**SFT LoRA snippet (Nemotron-3-Nano, Megatron-Bridge path):**
 
 ```bash
+# spark_single.yaml sets TP=1, EP=1 (single device), bf16
 python -m megatron_bridge.examples.recipes.nemotron_3.finetune_nemotron_3_nano \
     --per-split-data-args-path /training/data/data_args.json \
     --tokenizer-model /models/nemotron3/tokenizer.model \
     --config-file configs/spark_single.yaml
 ```
 
-### DGX Spark UMA fix
+`spark_single.yaml` key overrides for single-Spark:
+```yaml
+model_parallel_size: 1
+expert_parallel_size: 1
+pipeline_parallel_size: 1
+micro_batch_size: 1
+global_batch_size: 16
+lr: 1.0e-5          # Megatron convention: LR 1e-5 for full-context packing
+min_lr: 1.0e-6
+train_iters: 2000
+eval_iters: 50
+lora:
+  r: 32
+  alpha: 32
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  # never add router_weight here
+```
 
-`train/eager_load_patch.py` per setup-guide §4.3. Required on Spark to bypass the 66%-of-weight-load OOM.
+**DGX Spark UMA fix (mandatory):**
+
+`train/eager_load_patch.py` — must be applied before loading any BF16 model on Spark to prevent OOM at ~66% of weight load:
+
+```python
+import os
+from safetensors.torch import safe_open
+
+def patched_load_shard(path: str, device: str) -> dict:
+    tensors = {}
+    with safe_open(path, framework="pt", device=device) as f:
+        for k in f.keys():
+            tensors[k] = f.get_tensor(k).to(device, non_blocking=True)
+    # evict page cache to recover UMA immediately after load
+    fd = os.open(path, os.O_RDONLY)
+    os.posix_fadvise(fd, 0, os.stat(path).st_size, os.POSIX_FADV_DONTNEED)
+    os.close(fd)
+    return tensors
+```
+
+After loading, also run `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'` to clear Linux page cache competing with model memory in the unified pool.
+
+---
+
+### Tier 2 — DPO (weekly, Sundays)
+
+Runs on top of the week's promoted SFT adapter. Preference pairs are grounded in observed evidence (never speculative).
+
+```python
+from trl import DPOTrainer, DPOConfig
+
+trainer = DPOTrainer(
+    model=model, ref_model=ref_model,
+    train_dataset=dpo_pairs_ds,
+    args=DPOConfig(
+        beta=0.1,
+        learning_rate=5e-6,          # lower LR than SFT (alignment, not capability)
+        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,
+        optim="adamw_8bit",
+        bf16=True,
+        lr_scheduler_type="linear",
+        max_length=4096,
+        max_prompt_length=2048,
+    ),
+)
+```
+
+Same eval gate as SFT. If DPO fails the gate, the SFT adapter stays in production; the DPO failure trajectories are queued for the next week's shard.
+
+---
+
+### Tier 3 — GRPO/RLVR (v0.2+, not in v0.1)
+
+Prerequisites before activating:
+1. SFT nightly cycle has been stable for ≥ 30 consecutive nights (no forgetting probe alerts).
+2. Internal gold set shows ≥ 5 pp improvement over the pre-nightly-SFT baseline.
+3. Task verifier functions are implemented per environment type:
+   - **Math:** exact-answer match or SymPy equivalence.
+   - **Code:** execution in Docker sandbox + ≥ 1 generated unit test passes.
+   - **Tool-use:** full round-trip (tool call → valid response → assistant summarizes correctly).
+   - **Instruction-following:** IFEval-style format verifier.
+
+**Nemotron path:** `NVIDIA-NeMo/Gym` environments + `NVIDIA-NeMo/RL` synchronous GRPO. Container: `nvcr.io/nvidia/nemo-rl:v0.4.0.nemotron_3_nano`. Dataset: `nvidia/Nemotron-3-Nano-RL-Training-Blend` + Lamark's own `codebase_rl_tasks.jsonl` (from plan/10c Phase 4).
+
+**OpenThoughts path (Harbor + SkyRL):** Use the `open-thoughts/OpenThoughts-Agent-v1-RL` task format (instruction.md + Dockerfile + verifier.py) produced by `connectors/rl_task_build.py`. Orchestrate with Harbor (`github.com/harbor-framework/terminal-bench`) for container execution and SkyRL (`github.com/NovaSky-AI/SkyRL`) for the RL training loop. This path is model-agnostic and works for both Qwen3.6 and Nemotron.
+
+**Qwen3.6 path:** TRL `GRPOTrainer` on packed Parquet. Works on single Spark but runs materially slower than SFT (~3× wall-clock per step). Budget accordingly.
+
+**Key GRPO hyperparameters:** `lr=1e-6` (lower than SFT — forgetting is catastrophic at GRPO LR), `kl_coeff=0.1`, `clip_ratio=0.2`, `num_generations=8` per prompt. **Do not run GRPO until the SFT cycle is stable** — GRPO on unstable base behavior produces reward hacking rather than genuine improvement.
+
+**Key GRPO literature:**
+- SFT loop = STaR (arXiv 2203.14465) + ReST (arXiv 2308.08998) + ReST-meets-ReAct (arXiv 2312.10003)
+- RL phase = DeepSeek-R1 GRPO (arXiv 2501.12948) + Agent-RLVR (arXiv 2506.11425)
+- Verifier design = V-STaR (arXiv 2402.06457)
+- Error recovery = Fission-GRPO (arXiv 2601.15625)
+- Step-level reward = PRM "Let's Verify Step by Step" (arXiv 2305.20050)
+
+---
+
+### Tier 4 — Full weight fine-tuning (out of scope)
+
+| Model | Why not viable on single Spark | Minimum hardware |
+|---|---|---|
+| Nemotron-3-Nano (30B MoE) | BF16 weights (~62 GB) + activations + AdamW optimizer states (2× model for fp32 Adam) exceed 128 GB UMA | ≥ 2× H100 nodes; Megatron-Bridge TP=2, EP=8, PP=1 |
+| Qwen3.6-35B-A3B | Same capacity constraint | ≥ 2× H100 nodes; Megatron-SWIFT EP=8 |
+| Gemma4-27B | BF16 (~54 GB) + Adam states (~108 GB) exceeds Spark | Single H100 80 GB (tight); dual Spark via ConnectX-7 might work |
+
+Full weight training is never part of the nightly, weekly, or monthly cycles. The monthly merge (`merge_and_unload`) merges LoRA deltas back into frozen base weights — this is merge-without-gradient, not training. True full-parameter retraining from scratch requires a multi-node H100 cluster and is out of scope for v0.1 and likely v0.2.
 
 ## Adapter versioning
 
@@ -430,7 +644,7 @@ def build_preference_pairs():
     # 4. KB reinforce signal: positive vs negative outcomes for the same prompt class.
 ```
 
-TRL `DPOTrainer` on the SFT LoRA, +1 epoch. Same eval gate.
+TRL `DPOTrainer` on the promoted SFT LoRA. Key settings: `beta=0.1`, `lr=5e-6` (lower than SFT — alignment polish, not capability injection), `num_train_epochs=1`, `bf16=True`, `max_length=4096`, `max_prompt_length=2048`. Same eval gate. If DPO fails the gate, the SFT adapter stays in production; DPO failure trajectories are queued for next week's shard.
 
 ## DPO pair schema
 
@@ -469,19 +683,25 @@ The `reduced/dpo_pairs.jsonl` file uses Nemotron-Agentic-v1 format. Each line is
 
 ## Monthly merge (day 30)
 
+**This is merge-without-gradient** — no training steps occur. The accumulated LoRA delta (30 nights of SFT + 4 DPO runs) is baked back into the frozen base weights arithmetically, then the LoRA delta is reset to zero for the next cycle. This resets accumulated rank drift and keeps the serving checkpoint lean.
+
 ```python
 def monthly_merge():
     model = load_base_with_lora(prod_adapter)
-    merged = model.merge_and_unload()
-    requantize(merged, target="AWQ-INT4")  # or NVFP4 via TensorRT Model Optimizer
-    reset_lora_delta(merged)
-    recompute_ewc_fisher(merged, anchor=general_anchor)
-    refresh_oss_instruct_seeds()
-    rotate_frontier_teacher()  # Claude → GPT → Gemini
-    full_eval_sweep()
+    merged = model.merge_and_unload()          # arithmetic merge, no gradients
+    # Quantize for serving (pick one):
+    requantize(merged, target="AWQ-INT4")      # consumer GPU path
+    # requantize(merged, target="NVFP4")       # DGX Spark path via TensorRT Model Optimizer
+    reset_lora_delta(merged)                   # fresh LoRA delta = zero, ready for next cycle
+    recompute_ewc_fisher(merged, anchor=general_anchor)  # update forgetting regularizer
+    refresh_oss_instruct_seeds()               # rotate synthetic seed pool
+    rotate_frontier_teacher()                  # Claude → GPT → Gemini → back to Claude
+    full_eval_sweep()                          # all benchmarks + forgetting probe at new baseline
     tag = f"lamark-base-v{datetime.utcnow():%Y.%m}"
     kb.upsert_release(tag, lineage)
 ```
+
+The monthly merge is the ONLY time a new base checkpoint is created. All nightly SFT and weekly DPO runs operate as LoRA deltas on top of last month's base. Never treat the monthly merge as a training run — it produces no new knowledge; it only consolidates accumulated adapters.
 
 ## Loop C (prompt section evolution) jobs
 

@@ -171,7 +171,7 @@ Over time, `lamark-core` risks becoming bloated. **Resist adding code to `lamark
 | Source | Path | Role |
 |---|---|---|
 | openai/codex (Apache 2.0) | `~/.cache/lamark/vendor/codex` | Rust north star: turn loop, provider trait, trace format, SQ/EQ pattern, MCP. |
-| NousResearch/hermes-agent (MIT) | `~/.cache/lamark/vendor/hermes-agent` | Architecture model; re-implement in Rust. Python copy vendored at `learning/vendor/hermes/`. |
+| NousResearch/hermes-agent (MIT) | `~/.cache/lamark/vendor/hermes-agent` | Architecture model; re-implement in Rust. v0.14.0 "Foundation Release" (May 2026). Key files: `run_agent.py` (AIAgent core, single entrypoint for CLI/gateway/MCP/ACP), `prompt_builder.py` + `prompt_caching.py` (prompt assembly + Anthropic cache breakpoints), `context_compressor.py` (two-layer compression: 85% rough pre-gate + 50% in-loop), `tools/registry.py` (~70 tools, ~28 toolsets, ThreadPoolExecutor up to 8 parallel workers). Multi-agent Kanban + `/goal` Ralph-loop (v0.13.0), Curator 7-day skill cycle, Atropos RL trajectory export (`batch_runner.py` + `trajectory_compressor.py`), LSP semantic diagnostics on every file write (v0.14.0). Python copy vendored at `learning/vendor/hermes/`. |
 | claude-code mirror | `~/.cache/lamark/vendor/claude-code` | Hook taxonomy + prompt composition design reference (licensing risk — read interface only, never copy code). |
 
 These repos are developer conveniences. CI does not depend on them.
@@ -188,6 +188,15 @@ These repos are developer conveniences. CI does not depend on them.
 - **Forbidden deps:** GPL/AGPL transitive. Enforced by `cargo deny`. (TruffleHog is AGPL but runs out-of-process in the training pipeline — that's fine.)
 - **MSRV:** Rust 1.94.1 (always use latest stable). Edition 2024.
 - **Dependency versions:** always use the latest stable version of every crate. Do not pin to an older version unless a specific incompatibility is documented with a comment in `Cargo.toml`. When adding or updating a dependency, check crates.io for the current latest and use that version.
+- **Nemotron-3-Nano** is a Mamba-2 / Transformer hybrid MoE: 52 layers (23 MoE + 23 Mamba-2 + 6 GQA attention), NoPE (no positional encodings). Mamba-2 layers have fixed recurrent state — the KV cache grows only from the 6 attention layers, making it ~3× smaller than a comparable pure-Transformer MoE at the same context length. The full BF16 model (~62 GB) fits DGX Spark's 128 GB unified memory with 256K+ context comfortable. Reasoning toggle: `enable_thinking=True/False` in chat template; `<think>` = token-id 12, `</think>` = token-id 13. Do not tune the router (rule 6). Recommended inference params: `temperature=1.0, top_p=1.0` (thinking on), `temperature=0.6, top_p=0.95` (tool calls), greedy (thinking off). Production DGX Spark serving: `avarok/vllm-dgx-spark:v11` + NVFP4 quant `cybermotaz/nemotron3-nano-nvfp4-w4a16` with `--kv-cache-dtype fp8 --gpu-memory-utilization 0.85` (~65 tok/s single-stream / 167 tok/s @ concurrency 10). Set `--gpu-memory-utilization` 0.70–0.85 on Spark; higher starves the OS page cache.
+- **Qwen3.5 family** (Feb 2026, Apache 2.0) is a new architecture — **hybrid Gated DeltaNet (SSM) + Gated Attention + sparse MoE**, natively multimodal, 262K native context (extensible to 1M), 201 languages. Dense branch: 0.8B / 2B / 4B / 9B. MoE branch: 35B-A3B (`Qwen3.6-35B-A3B`, `qwen3_5_moe` arch ID), 122B, 397B. **LoRA target modules differ** from pure-Transformer — DeltaNet layers have different projection names; verify Unsloth `FastModel.from_pretrained` accepts the model before committing a training run. Qwen3.5-0.8B and -2B are not autonomous agents (classifiers/extractors only). Qwen3.5-4B is the practical autonomous-agent floor. Qwen3.5-9B is a full-capability agent comparable to Nemotron-Nano scale. Never greedy on any Qwen3.5 model.
+- **Qwen3.6-35B-A3B** is the MoE branch of the Qwen3.5 family (`qwen3_5_moe` arch ID). Load BF16 on DGX Spark via the kreuzhofer eager-load patch (`patched_load_shard` with `posix_fadvise POSIX_FADV_DONTNEED`) to bypass UMA double-allocation OOM at ~66% of weight load. Production serving: `vllm serve --enable-lora --enable-mixed-moe-lora-format --max-loras 4`; per-request adapter selection via `"model": "adapter-name"` in the OpenAI request body. **Never use greedy decoding with Qwen3** — they loop at greedy; use `temperature=0.7, top_p=0.8, top_k=20` (tool loops / thinking off) or `temperature=0.6, top_p=0.95, top_k=20` (reasoning / thinking on).
+- **Data mixing (70/20/10/5 rule):** every nightly training blend is 65% new task data + 20% rolling 30-day replay (MSSR-weighted by forgetting risk) + 10% General Anchor (FROZEN, quarterly refresh only) + 5% Safety Anchor (FROZEN). Curriculum-within-pack: every 4096-token pack must contain ≥1 anchor sample + ≥1 replay sample. See `docs/plan/10-training-pipeline.md` and `setup-guide.md` §3.5 for the full recipe.
+- **Codebase extraction (InferredBugs × OpenThoughts):** `codebase_extract.py` runs the project's static analyzer (cargo check / mypy / tsc / go vet / …) on consecutive commit pairs, extracts fixed bugs as teacher-traced SFT examples and Docker+pytest RL task triplets. Keyword search on commit messages misses 41–97% of such fixes. See `docs/plan/10c-dataset-from-codebase.md` for the full spec.
+- **OpenThoughts-Agent key findings:** (a) Teacher model family matters more than model size — GLM-4.6 gave ~2× downstream improvement on Terminal-Bench vs GPT-family teachers; rotate teacher quarterly to prevent distribution collapse. (b) RL gives modest incremental gain: SFT-only 16.1% → SFT+RL 17.3% (+1.2 pp) on TB-Dev; SFT data quality is the primary lever. (c) ~15K SFT traces was sufficient for Qwen3-8B to reach 15.7% SWE-Bench Verified (vs 0.7% baseline) — quality filter aggressively, don't pad. (d) RL task triplet format: instruction.md + Dockerfile (Ubuntu, repo at buggy commit) + verifier.py (pytest that re-runs analyzer). (e) Three-stage RL filter: bad verifier → env stability → difficulty (discard tasks with < 10% or > 85% reference pass rate). See `open-thoughts/OpenThoughts-TBLite` (100 tasks, r=0.911 with Terminal-Bench 2.0) as fast eval proxy.
+- **Nemotron-3-Super (120B-A12B):** larger sibling of Nano. Three architectural additions not in Nano: (1) **NVFP4 pre-training** (unlike Nano which used BF16; 4× inference speedup on B200 vs FP8 on H100); (2) **Multi-Token Prediction** — predicts 3 future tokens simultaneously (up to 3× structured-generation wall-clock speedup); (3) **Latent MoE** — tokens projected into compressed low-rank latent space (4× more effective experts for same compute). Not fine-tunable on single Spark (120B optimizer states exceed 128 GB UMA). Use as a teacher model or hosted endpoint for synthetic data generation.
+- **Nemotron eval suite (official benchmarks):** BFCL v4 (53.8%), LiveCodeBench v6 (68.3%), MMLU-Pro (78.3%), GPQA Diamond (73.0%), AIME 2025 (89.1%), SciCode (33.3%), IFBench (71.5%), HLE (10.6%). Run via NeMo Evaluator SDK (`github.com/NVIDIA-NeMo/Evaluator`) + NeMo Skills. Use `nvcr.io/nvidia/nemo:25.11.nemotron_3_nano` container. These are the baseline scores to beat with each nightly adapter.
+- **Qwen datasets:** `Qwen/DeepPlanning` (1K–10K; planning with proactive API calls; Apache 2.0; arXiv:2601.18137) maps directly to Lamark's tool-use loop — use for cold-start SFT. `Qwen/RationaleRM` (22K+1K; atomic-rationale preference pairs; CC BY 4.0; RM-Bench 87.1%; arXiv:2602.04649) is the highest-quality preference dataset for DPO/reward model training. Both ingest as Nemotron-Agentic-v1 via `transform/trace_to_messages.py`.
 
 ---
 
@@ -212,6 +221,46 @@ Keep architecture decision records in `docs/decisions/` with the `NNNN-kebab-cas
 
 One thing only: the training pipeline. It is a separate process. The Rust agent never imports it. Cron runs it. It reads from `~/.lamark/traces/` (trace bundles produced by the Rust agent) and writes adapters to `~/.lamark/adapters/`. It talks to knowledge-base through the HTTP API.
 
+**Nightly cycle (T+0..T+9h) — high-level steps:**
+
+| Step | What happens |
+|---|---|
+| T+0:00 Collect | `lamark trace export --since=yesterday` + KB pull + git/PR/YouTrack/Slack connectors → `/raw/*.jsonl` |
+| T+0:30 Redact stage 1 | Gitleaks + TruffleHog (`--no-verification` air-gapped) + detect-secrets. Any verified finding blocks the sample. |
+| T+0:45 Redact stage 2 | Presidio (`presidio-analyzer` + spaCy `en_core_web_lg`) + GLiNER. Type-preserving substitution (`<EMAIL_3>`, `<API_KEY_OPENAI_1>`, …), salted, consistent IDs within each document, reset across documents. |
+| T+1:00 Transform | Source → Nemotron-Agentic-v1 JSONL. Lamark traces: reducer already emitted `conversation.jsonl`; consume directly. Git/PR/issue/Slack: `transform/` converters. |
+| T+1:30 Curate | Post-redaction only (safe to send to frontier models). OSS-Instruct seeding → two-judge consensus (Claude+GPT, both ≥ 4/5) → execution-based filter for code (Docker sandbox, `mypy`/`cargo check`/`tsc`). |
+| T+2:30 Quality | PPL outlier (drop top+bottom 5% via base model), MinHash-LSH dedup (Jaccard ≥ 0.85), 13-gram decontamination against eval suite, language balance, length cap (>16K tokens dropped unless long-context), residual PII rescan. |
+| T+2:55 Blend | 70/20/10/5 rule + MSSR-weighted replay + curriculum-within-pack. See `build_nightly_blend()` in `data-pipeline/build_blend.py`. |
+| T+3:00 Pack | Nemotron path: `uv run nemotron nano3 data prep sft` → packed Parquet (4096-token bins, loss-mask rolled). Qwen3/Gemma4 path: Unsloth packs on-the-fly with `packing=True`. |
+| T+3:30 Train | Unsloth LoRA (Qwen3/Gemma4, ~5 h); or Megatron-Bridge `nano-v3` (Nemotron, ~5–6 h). |
+| T+8:30 Eval-gate | MMLU-Pro-250, HumanEval, MBPP, SWE-Bench-Lite-50, BFCL v4, IFEval, MT-Bench, Arena-Hard-100, internal gold set. `tool_call_compliance ≥ 0.995` strict. Bonferroni-corrected. |
+| T+8:50 Forgetting probe | 100 frozen examples per base model, judge-scored. 1pp single-night → warn. 2pp/7d → auto-bump anchor 10%→15%. 3pp/7d → suspend nightly cycles. 5pp anywhere → rollback to last weekly snapshot. |
+| T+9:00 Promote/rollback | vLLM hot-swap (`load_lora_adapter` / `unload_lora_adapter`). POST adapter metadata + event to knowledge-base. |
+
+**Weekly** (Sundays): DPO preference pairs from same-prompt reruns, PermissionDenied rejected branches, two-judge re-scoring.
+
+**Monthly** (day 30): `merge_and_unload` → requantize (NVFP4/AWQ-INT4) → reset LoRA delta → recompute EWC Fisher → rotate frontier teacher (Claude → GPT → Gemini) → full eval sweep → tag `lamark-base-vYYYY.MM`.
+
+**General Anchor sources** (frozen; build once quarterly, never rotate nightly):
+
+```python
+anchor = {
+    "tulu3_sft":         (sample=10_000, source="allenai/tulu-3-sft-mixture"),
+    "openhermes_25":     (sample=5_000,  source="teknium/OpenHermes-2.5"),
+    "helpsteer3":        (sample=3_000,  source="nvidia/HelpSteer3"),
+    "ifeval_train":      (sample=1_000,  source="google/IFEval-train"),
+    "your_gold_set":     (sample=2_000,  source="internal/curated_gold"),
+    "math_anchor":       (sample=1_000,  source="nvidia/OpenMathReasoning"),
+    "code_anchor":       (sample=2_000,  source="bigcode/the-stack-smol"),
+    "general_chat":      (sample=2_000,  source="lmsys/lmsys-chat-1m"),
+    # New anchors from dataset catalog expansion:
+    "agentic_anchor":    (sample=2_000,  source="nvidia/Nemotron-SFT-Agentic-v2"),
+    "tool_call_anchor":  (sample=1_000,  source="Salesforce/xlam-function-calling-60k"),
+    "planning_anchor":   (sample=500,    source="Qwen/DeepPlanning"),
+}
+```
+
 Install: `pip install -e learning/[spark]` (ML extras require Linux + CUDA). For dev without GPU: `pip install -e learning/`.
 
 The `lamark-train` entry point is the Python training CLI. The Rust binary `lamark` is the primary agent command.
@@ -230,6 +279,13 @@ These rules are non-negotiable across both the Rust agent and the Python trainin
 6. **Never unfreeze the MoE router** during LoRA training. Pre-trained routing is load-bearing.
 7. **No non-English strings in user-facing code or docs** outside `learning/vendor/hermes/` (third-party MIT).
 8. **`learning/vendor/hermes/` is third-party MIT code.** Only modify files marked `LAMARK-PATCH` and record the diff in `learning/vendor/hermes/MODIFICATIONS.md`. Never rewrite upstream code in place without a patch marker.
+9. **Never use greedy decoding with any Qwen3 model.** They loop at greedy. Use `temperature=0.7, top_p=0.8, top_k=20` for tool loops (thinking off) and `temperature=0.6, top_p=0.95, top_k=20` for reasoning (thinking on). Applies to serving, batch eval, and synthetic data generation.
+10. **Never refresh the General Anchor more than quarterly.** It is ROM — build once, never rotate nightly or weekly. Once it churns, the forgetting probe loses its fixed reference and catastrophic forgetting becomes undetectable.
+11. **Always start SFT from the instruct checkpoint, never the base model.** Chat template, `<tool_call>` grammar, and system-prompt handling are baked into the instruct checkpoint. Starting from the base model requires an alignment corpus we don't have and produces subtly wrong tool-call behavior even at low training loss.
+12. **`assistant_only_loss=True` is mandatory for every SFT and DPO run.** Without it the model trains on user and system tokens, learns to predict them, and produces confused multi-turn behavior at inference time despite low training loss. Use Unsloth's `train_on_responses_only` or TRL's `SFTConfig(assistant_only_loss=True)`.
+13. **Never tune `lm_head` or `embed_tokens` during SFT.** Those layers are only enabled for Tier 0 CPT (continued pre-training on a BASE model with > 50 MB raw unseen domain text). Enabling them during SFT on an instruct model produces vocabulary drift and unpredictable tokenization changes.
+14. **GRPO/RL is a last resort, not a first tool.**
+15. **Verify Unsloth support before training any Qwen3.5 dense model.** The Gated DeltaNet layers use different projection names than standard Transformer attention. Passing wrong `target_modules` silently trains only the attention layers and ignores SSM layers — check `model.named_modules()` against the LoRA config before starting a run. Most capability gains come from better SFT data, not a more powerful training algorithm. The GRPO tier (v0.2+) requires ≥ 30 consecutive stable nightly SFT nights, implemented task verifiers, and a stable forgetting-probe baseline before it can be activated without reward hacking.
 
 ---
 

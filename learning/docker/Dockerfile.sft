@@ -1,0 +1,46 @@
+# Lamark SFT LoRA image (plan/10 Tier-1 path).
+#
+# Built on NGC PyTorch 26.01 (working torch+CUDA for GB10 sm_121 / CUDA 13 on
+# aarch64). Adds the HF SFT stack on top WITHOUT touching torch. Unlike the
+# EasyEdit image, this uses CURRENT transformers (5.x) so it can load brand-new
+# architectures like Qwen3.5 (model_type `qwen3_5`, added after transformers
+# 4.57). There is no EasyEdit here — SFT LoRA is not pinned to old transformers.
+#
+# Build (on the Spark host):
+#   docker build -f learning/docker/Dockerfile.sft -t lamark/sft:26.01 .
+#
+# Run via learning/scripts/spark/06_train_sft.sh.
+
+FROM nvcr.io/nvidia/pytorch:26.01-py3
+
+# HF SFT stack. transformers unpinned at the major level so the build picks up
+# the newest release (needs >= the version that added qwen3_5). peft+trl+
+# accelerate are the LoRA SFT toolchain; datasets loads the JSONL.
+RUN pip install --no-cache-dir \
+        "transformers>=5.9" \
+        "peft>=0.18" \
+        "trl>=0.27" \
+        "accelerate>=1.13" \
+        "datasets>=3.0" \
+        "sentencepiece>=0.2" \
+        "hf_transfer>=0.1.8" \
+        "torchao>=0.16.0"
+# ^ torchao: the base image ships 0.15.0+git which transformers/TRL reject
+#   ("only versions above 0.16.0 are supported"); pull a compatible release.
+
+# Qwen3.5's linear-attention layers use a short causal conv; the native
+# transformers path uses causal-conv1d kernels when present (falls back to a
+# slow path otherwise). Built against the in-image torch, so --no-build-isolation.
+RUN pip install --no-cache-dir --no-build-isolation causal-conv1d
+
+# Fail fast at build time on the import surface + transformers/qwen3_5 support.
+RUN python -c "import transformers, peft, trl, accelerate, datasets; \
+print(f'transformers {transformers.__version__} peft {peft.__version__} trl {trl.__version__} ok')"
+RUN python -c "from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES as M; \
+assert M.get('qwen3_5')=='Qwen3_5ForCausalLM', M.get('qwen3_5'); print('qwen3_5 -> Qwen3_5ForCausalLM ok')"
+
+LABEL org.opencontainers.image.title="lamark-sft" \
+      org.opencontainers.image.description="HF SFT LoRA stack (transformers 5.x) on NGC PyTorch 26.01 for DGX Spark sm_121" \
+      org.opencontainers.image.source="https://github.com/lamark-agent/lamark-agent"
+
+WORKDIR /workspace

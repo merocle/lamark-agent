@@ -95,40 +95,58 @@ def _build_easyedit_hparams(hparams_yaml: dict[str, Any], rewrite_module_tmp: st
 
     We import lazily because the EasyEdit modules pull torch + huge transformer
     deps; we don't want --dry-run runs to need a GPU.
+
+    EasyEdit's `MEMITHyperParams`/`ROMEHyperParams` are dataclasses whose
+    fields are all required (no defaults). We therefore pass every field
+    explicitly as a keyword argument rather than constructing an empty object
+    and setting attributes after the fact (which raises a missing-arg
+    TypeError on this EasyEdit version). `stats_dir` is where the mom2
+    covariance cache is written; it points at the mounted EasyEdit checkout
+    so the (expensive) covariance survives across runs.
     """
     sys.path.insert(0, str(easyedit_root))
+    common = dict(
+        layers=list(hparams_yaml["layers"]),
+        fact_token=hparams_yaml.get("fact_token", "subject_last"),
+        v_num_grad_steps=int(hparams_yaml.get("v_num_grad_steps", 25)),
+        v_lr=float(hparams_yaml.get("v_lr", 0.5)),
+        v_loss_layer=int(hparams_yaml.get("v_loss_layer", 47)),
+        v_weight_decay=float(hparams_yaml.get("v_weight_decay", 0.5)),
+        clamp_norm_factor=float(hparams_yaml.get("clamp_norm_factor", 0.75)),
+        kl_factor=float(hparams_yaml.get("kl_factor", 0.0625)),
+        rewrite_module_tmp=rewrite_module_tmp,
+        layer_module_tmp=hparams_yaml["layer_module_tmp"],
+        mlp_module_tmp=hparams_yaml["mlp_module_tmp"],
+        attn_module_tmp=hparams_yaml["attn_module_tmp"],
+        ln_f_module=hparams_yaml["ln_f_module"],
+        lm_head_module=hparams_yaml["lm_head_module"],
+        device=int(hparams_yaml.get("device", 0)),
+        model_name=str(base_model),
+        stats_dir=str(hparams_yaml.get("stats_dir", "/easyedit/data/stats")),
+        # Both ROME and MEMIT require the mom2 covariance fields in this
+        # EasyEdit version (ROME reads them via the shared rewrite path).
+        mom2_adjustment=bool(hparams_yaml.get("mom2_adjustment", True)),
+        mom2_dataset=hparams_yaml.get("mom2_dataset", "wikitext"),
+        mom2_n_samples=int(hparams_yaml.get("mom2_n_samples", 3000)),
+        mom2_dtype=hparams_yaml.get("mom2_dtype", "float32"),
+    )
     if method == "memit":
         from easyeditor.models.memit.memit_hparams import MEMITHyperParams as HP
-    else:
-        from easyeditor.models.rome.rome_hparams import ROMEHyperParams as HP
+        return HP(
+            alg_name="MEMIT",
+            layer_selection=hparams_yaml.get("layer_selection", "all"),
+            mom2_update_weight=float(hparams_yaml.get("mom2_update_weight", 15000)),
+            **common,
+        )
 
-    # EasyEdit's `from_hparams` expects a file path; rather than re-serialize
-    # our YAML to its on-disk format, we construct the object directly and
-    # set fields imperatively. The fields below cover the ROME/MEMIT subset
-    # that EasyEdit actually reads.
-    hp = HP()
-    hp.model_name = str(base_model)
-    hp.device = int(hparams_yaml.get("device", 0))
-    hp.layers = list(hparams_yaml["layers"])
-    hp.rewrite_module_tmp = rewrite_module_tmp
-    hp.layer_module_tmp = hparams_yaml["layer_module_tmp"]
-    hp.mlp_module_tmp = hparams_yaml["mlp_module_tmp"]
-    hp.attn_module_tmp = hparams_yaml["attn_module_tmp"]
-    hp.ln_f_module = hparams_yaml["ln_f_module"]
-    hp.lm_head_module = hparams_yaml["lm_head_module"]
-    hp.fact_token = hparams_yaml.get("fact_token", "subject_last")
-    hp.v_num_grad_steps = int(hparams_yaml.get("v_num_grad_steps", 25))
-    hp.v_lr = float(hparams_yaml.get("v_lr", 0.5))
-    hp.v_loss_layer = int(hparams_yaml.get("v_loss_layer", 47))
-    hp.v_weight_decay = float(hparams_yaml.get("v_weight_decay", 0.5))
-    hp.clamp_norm_factor = float(hparams_yaml.get("clamp_norm_factor", 0.75))
-    hp.kl_factor = float(hparams_yaml.get("kl_factor", 0.0625))
-    hp.mom2_adjustment = bool(hparams_yaml.get("mom2_adjustment", True))
-    hp.mom2_update_weight = float(hparams_yaml.get("mom2_update_weight", 15000))
-    hp.mom2_dataset = hparams_yaml.get("mom2_dataset", "wikipedia")
-    hp.mom2_n_samples = int(hparams_yaml.get("mom2_n_samples", 100000))
-    hp.mom2_dtype = hparams_yaml.get("mom2_dtype", "float32")
-    return hp
+    from easyeditor.models.rome.rome_hparams import ROMEHyperParams as HP
+    return HP(
+        alg_name="ROME",
+        context_template_length_params=hparams_yaml.get(
+            "context_template_length_params", [[5, 10], [10, 10]]
+        ),
+        **common,
+    )
 
 
 def _request_from_fact(fact: Fact) -> dict[str, str]:
@@ -188,6 +206,10 @@ def main() -> int:
     print(f"loading model: {args.base_model}")
     t0 = time.time()
     tok = AutoTokenizer.from_pretrained(str(args.base_model), trust_remote_code=True)
+    # NemotronH ships without a pad token; EasyEdit's compute_z pads batches of
+    # paraphrase contexts, so give it one. eos is the conventional choice.
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         str(args.base_model),
         torch_dtype=getattr(torch, hparams_yaml.get("dtype", "bfloat16")),

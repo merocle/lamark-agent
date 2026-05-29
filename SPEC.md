@@ -28,14 +28,17 @@ Build an open-source **Rust** agent that:
 - Tool registry (~70 built-in tools across ~28 toolsets).
 - Sandbox abstraction that hosts both shell commands AND whole subagents. **In-tree at v0.1:** `local` (dev default), `docker` (single-host prod), `ssh` (build-server ops), `kubernetes` (multi-tenant production default). **Plugin candidates:** Modal, Daytona, Singularity, Vercel-Sandbox. See [`docs/plan/05c`](./docs/plan/05c-sandbox-and-agent-hosting.md) for the trait + backends and [`docs/plan/05d`](./docs/plan/05d-sandbox-config-examples.md) for worked configs.
 - Skill system: markdown skill files with YAML frontmatter; agent-authored skills; bundled skills.
-- **Curator** background agent — 7-day skill-library consolidation.
-- **External memory providers** — Honcho (dialectic user modeling), Mem0, Hindsight; pluggable trait.
+- **Curator** background agent — 7-day skill-library consolidation; grades, archives (tarball backup), and prunes; **archives rather than deletes** so any forced rollback is possible; uses a secondary judge model separate from the main agent loop.
+- **External memory providers** — Honcho (dialectic user modeling, 12-layer identity tracking), Mem0, Hindsight; pluggable trait.
 - **Prompt cache logic** — generalized: Anthropic `cache_control` breakpoints when talking to Anthropic-compat APIs; prefix-cache-friendly stable-section emission when talking to vLLM/SGLang/llama.cpp.
 - **Gateway** — long-running process that wraps the agent for messaging platforms; Lamark v0.1 ships Telegram + Slack + Discord adapters; the gateway protocol is platform-agnostic so other adapters can plug in later.
 - **MCP** — bidirectional. Lamark is both an MCP client (consume third-party MCP servers) and an MCP server (expose Lamark tools to Claude Desktop / Cursor / VS Code / Codex / Windsurf).
 - **ACP (Agent Communication Protocol)** — registry + adapter, so Lamark can call other agents and be called by them.
 - **Batch runner** (for offline eval / mass trajectory generation).
 - **Trajectory export** — extended into Codex-style trace bundle (§9).
+- **LSP semantic diagnostics** — every `write_file` / `patch` surfaces compiler/linter errors back to the agent before the turn ends (Hermes v0.14.0 pattern). Adopt for all write-class tools where an LSP-checkable target exists.
+- **Multi-agent Kanban** (Hermes v0.13.0+) — orchestrator posts task cards; subagents pull, report heartbeat, and complete; `/goal` Ralph-loop locking primitive prevents re-entrancy. Each subagent has an isolated conversation + terminal session + toolset; only the final summary returns to the orchestrator (zero context-cost intermediate steps). `max_spawn_depth` caps nesting.
+- **Atropos RL integration** — `batch_runner` + `trajectory_compressor` compress live agent trajectories into Atropos-format GRPO training data; feeds the nightly SFT pipeline and eventually reward-model training. Lamark's `lamark-trace` crate (Rust) is the upstream producer; `learning/scripts/transform/agent_to_messages.py` is the consumer.
 
 ### 2.2 Borrow from Claude Code (re-implement; mirror code is licensing-risk)
 
@@ -85,7 +88,7 @@ The runtime is **Rust from day 1** — no Python bridge, no embedded interpreter
 
 | Source | Path | Role |
 |---|---|---|
-| NousResearch/hermes-agent (cloned) | `~/.cache/lamark/vendor/hermes-agent` | Architecture model; we re-implement in Rust. |
+| NousResearch/hermes-agent (cloned) | `~/.cache/lamark/vendor/hermes-agent` | Architecture model; we re-implement in Rust. v0.14.0 "Foundation Release" (May 2026). Deep-dive in `docs/plan/00c-hermes-deepdive-addendum.md`. |
 | gitverse claude-code mirror (cloned) | `~/.cache/lamark/vendor/claude-code` | Hooks + prompt composition design reference. |
 | openai/codex (cloned) | `~/.cache/lamark/vendor/codex` | Rust source we read directly; trace + provider trait + sandbox patterns. |
 | `../knowledge-base` | local repo | Canonical memory + dataset + eval-set store; Kotlin/Spring. |
@@ -94,11 +97,36 @@ The runtime is **Rust from day 1** — no Python bridge, no embedded interpreter
 
 ## 4. Target LLM matrix
 
-| Model | Params | Why pick it | Train via |
-|---|---|---|---|
-| **Qwen3.6-35B-A3B** (or Qwen3-8B if VRAM-tight) | 35B MoE, 3B active | Strong tool-calling baseline. Unsloth + Megatron-SWIFT pipelines exist. | Unsloth LoRA on single Spark / 24 GB consumer GPU. |
-| **NVIDIA-Nemotron-3-Nano-30B-A3B-BF16** | 30B MoE, 3B active | Day-zero Unsloth recipe. Schema-aligned with our trace format (`Nemotron-Agentic-v1`). | NVIDIA-NeMo/Megatron-Bridge `nano-v3` branch. |
-| **Gemma4-27B** | 27B dense | Apple-Silicon friendly (M3 Pro 36 GB). | Unsloth LoRA + MLX. |
+**Qwen3.5 family** (Qwen Team, Feb 2026; Apache 2.0; citation arXiv:2026/qwen3.5 "Towards Native Multimodal Agents"):
+
+Qwen3.5 is **not** Qwen3 + increment. It is a new architecture family:
+- **Hybrid Gated DeltaNet + Gated Attention** — SSM layers replace some attention layers (similar concept to Nemotron's Mamba-2 hybrid). Linear-complexity SSM layers have fixed recurrent state (no KV-cache growth), giving context efficiency advantages.
+- **Native multimodal** — early-fusion image+text pre-training from the start.
+- **262K native context, extensible to 1.01M** — across all sizes.
+- **201 languages** and RL training across million-agent environments.
+- `Qwen3.6-35B-A3B` (already in this table below) uses the `qwen3_5_moe` architecture ID — it is the **MoE branch** of this same family. The 0.8B–9B are the **dense branch**.
+
+> **LoRA target modules for DeltaNet layers differ from pure-Transformer.** Unsloth support for the `qwen3_5` architecture is evolving — verify `FastModel.from_pretrained` accepts the model before committing to a training run. See `docs/plan/10-training-pipeline.md` §Tier 1.
+
+| Model | Params | Layers | Context | Autonomous agent? | Rec. quant | Peak VRAM | Train via |
+|---|---|---|---|---|---|---|---|
+| **Qwen3.5-0.8B-Base** | 0.8B dense | 24 | 262K (1M ext.) | **No** — classifier/extractor only; wrap with deterministic logic; **MTP-trained** | Q8_0 or BF16 | 128K+ | Unsloth QLoRA r=16; ~2–3 GB |
+| **Qwen3.5-2B-Base** | 2B dense | 24 | 262K (1M ext.) | Borderline — single narrow domain, single-shot tool calls, weak beyond ~5 turns | Q6_K or Q8_0 | 128K | Unsloth QLoRA r=16–32; ~4–5 GB |
+| **Qwen3.5-4B-Base** | 4B dense | 32 | 262K (1M ext.) | **Yes** — practical floor for autonomous multi-turn agents | UD-Q5_K_XL or Q6_K | 64K+ | Unsloth QLoRA r=32; ~7–9 GB |
+| **Qwen3.5-9B-Base** | 9B dense | 32 | 262K (1M ext.) | **Yes** — full-capability agent; stronger than Qwen3-8B at same size tier | UD-Q4_K_XL or Q5_K_M | 32K (FP16-KV) / 64K (q8_0 KV) | Unsloth QLoRA r=32; ~11 GB |
+
+> **Deploy:** all four via `llama-server --jinja` (llama.cpp sm_121 build for Spark). Never vLLM on 12 GB. Serving params: `--temp 0.7 --top-p 0.8 --top-k 20` (tool loops). **Never greedy** — Qwen3.5 inherits the Qwen3 greedy-loop bug.
+
+> **0.8B / 2B are not autonomous agents.** Deploy inside a deterministic harness. Using them as agentic loops produces procedural-failure modes dominant in sub-4B models (arXiv:2601.16280).
+
+**Large / MoE models:**
+
+| Model | Params | Context | Notes | Train via |
+|---|---|---|---|---|
+| **Qwen3.6-35B-A3B** (`qwen3_5_moe` arch — MoE branch of Qwen3.5 family) | 35B MoE, 3B active | 32K | Strong tool-calling baseline. Multi-adapter vLLM (`--enable-mixed-moe-lora-format`). Never greedy. | Unsloth bf16 LoRA on Spark; kreuzhofer eager-load patch. |
+| **NVIDIA-Nemotron-3-Nano-30B-A3B-BF16** | 31.6B total, ~3B active | 1M | Mamba-2/Transformer hybrid (23 MoE+23 Mamba-2+6 GQA, NoPE). KV 3× smaller than pure-Transformer MoE. Schema-aligned with `Nemotron-Agentic-v1`. NVFP4 prod: 65 tok/s / 167 tok/s @10 concurrent. | Megatron-Bridge `nano-v3` branch (~5–6 h on Spark). |
+| **Gemma4-27B** | 27B dense | — | Apple-Silicon flagship (M3 Pro 36 GB). MLX-LM. | Unsloth LoRA + MLX. |
+| **NVIDIA-Nemotron-3-Super-120B-A12B** | 120B total, 12B active | — | NVFP4-pretrained; MTP (3× structured-gen speedup); Latent MoE. Teacher model / hosted endpoint only — not fine-tunable on single Spark. | Multi-node H100/B200 only. |
 
 Model choice is config, not code. One Rust provider implementation (`LocalOpenAICompat`) talks to vLLM / Ollama / llama.cpp / SGLang / LM Studio. Gemma4 (27B dense) is the Apple-Silicon flagship path via MLX-LM. A second (`AnthropicCompat`) carries cache_control breakpoints. The `ModelProvider` trait keeps these isolated.
 
@@ -341,13 +369,19 @@ learning:
 
 ## 9. Training pipeline
 
-Sources (per setup-guide §3.1):
+Sources (per setup-guide §3.1 and `docs/plan/10c`):
 
 1. **Lamark trace bundles** — primary signal. Reducer emits Nemotron-Agentic-v1 directly.
-2. `git_mining.py` — OctoPack pattern.
+2. `git_mining.py` — OctoPack pattern (commit message + diff → instruction pair).
 3. `pr_ingest.py` — multi-turn search/replace edits from PR review history.
 4. `youtrack_ingest.py` / `jira_ingest.py` — issue → bug-fix trajectory.
 5. `slack_ingest.py` — thread → Q&A pair.
+6. **`codebase_extract.py` (new; `plan/10c`)** — static-analysis bug-fix pairs from git history.
+   Runs language-appropriate analyzer (cargo check, mypy, tsc, go vet, …) on consecutive
+   commit pairs; extracts bugs present in parent but absent in child. Misses nothing that
+   keyword search would find, plus catches 41–97% more fixes that have no keyword signal.
+   Output: enriched with MR/PR trajectory (Phase 2) → teacher traces via GLM-4.6 (Phase 3)
+   → RL task triplets with pytest verifiers (Phase 4).
 
 Mandatory two-stage redaction (Gitleaks+TruffleHog+detect-secrets, then Presidio+spaCy+GLiNER with consistent salted IDs).
 
@@ -366,30 +400,95 @@ Quality: perplexity outlier, MinHash dedup, 13-gram decontamination against cano
 
 Curriculum-within-pack: every 4096-token pack contains ≥1 anchor + ≥1 replay + remainder new.
 
-**Training paths:**
-- Qwen3 / Gemma3 — Unsloth LoRA on Spark / 24 GB GPU (~5 h/night).
-- Nemotron — Megatron-Bridge `nano-v3` branch (~5–6 h/night).
+**Training tiers — decision matrix:**
 
-**Weekly DPO** (Sundays): preference pairs from (a) same-prompt reruns, (b) PermissionDenied events (rejected branch), (c) two-judge re-scoring. Knowledge-base's `reinforce` signal feeds in here.
+| Tier | Method | Frequency | When to use | Hardware | v0.1 status |
+|---|---|---|---|---|---|
+| **0 — CPT** | LoRA r=128 + `embed_tokens`/`lm_head` on BASE model; ~5% pretrain replay | Ad hoc | Raw domain corpus > 50 MB that can't be expressed as Q&A. Skip in 99% of cases. | Single Spark for ≤8B dense; not viable for 30B+ MoE | Skip unless explicitly needed |
+| **1 — SFT LoRA** | LoRA r=16–32 on INSTRUCT checkpoint; `assistant_only_loss=True`; 70/20/10/5 blend | Nightly | Capability injection from traces, git, PRs, issues, Slack | Single Spark ~5 h (Qwen3.6) / 5–6 h (Nemotron) | **Active** |
+| **2 — DPO** | LoRA r=16 on top of promoted SFT adapter; `β=0.1, lr=5e-6`; grounded preference pairs | Weekly (Sundays) | Alignment polish; reduces hallucination; feeds on KB `reinforce` signal | Single Spark ~2 h | **Active** |
+| **3 — GRPO/RLVR** | Synchronous GRPO with task verifiers per environment type | Monthly once stable | After SFT is stable (≥ 30 clean nights) and verifier functions are implemented | Single Spark slower than SFT; NeMo RL (Nemotron), TRL GRPO (Qwen3.6) | **v0.2+ roadmap** |
+| **4 — Full weight FT** | All parameters; Megatron-Bridge TP=2, EP=8 | Never in nightly/weekly/monthly cycle | Only for from-scratch reproductions — out of scope | ≥ 2× H100 nodes (30B+ MoE optimizer states exceed 128 GB UMA on single Spark) | **Out of scope** |
 
-**Monthly merge** (day 30): `merge_and_unload` → requantize (AWQ-INT4 / NVFP4) → reset LoRA → recompute EWC Fisher → rotate teacher → full eval sweep → tag `lamark-base-vYYYY.MM`.
+**Non-negotiable SFT constraints** (apply to every training run):
+- `load_in_4bit=False` for MoE (Qwen3.6, Nemotron); use `load_in_16bit=True` bf16. QLoRA OOMs at ~4% of weight load on Spark.
+- `assistant_only_loss=True` — mandatory; prevents learning user/system token patterns; adds ~1 pp on multi-turn evals.
+- Never tune `lm_head` or `embed_tokens` during SFT (only for CPT on BASE model).
+- Never tune the MoE router.
+- `α = r` (Unsloth default) for conservative forgetting; `α = 2r` for aggressive learning. Never arbitrary alpha.
+- Rank 16 safe default (less forgetting); go to 32 only if validation loss plateaus.
+- DoRA (`use_dora=True`) gives +0.3–4 pp at low ranks; rsLoRA only matters at r ≥ 64.
+
+**Weekly DPO** (Sundays): preference pairs from (a) same-prompt reruns judged by two-model panel, (b) PermissionDenied events (rejected branch), (c) two-judge re-scoring of regenerated candidates. Knowledge-base's `reinforce` signal feeds in here. LR 5e-6 (lower than SFT — alignment, not capability injection). Same eval gate as SFT; DPO failure → keep SFT adapter live.
+
+**Monthly merge** (day 30): `merge_and_unload` → requantize (AWQ-INT4 or NVFP4 via TensorRT Model Optimizer) → reset LoRA delta → recompute EWC Fisher on general anchor → rotate frontier teacher (Claude → GPT → Gemini) → full eval sweep → tag `lamark-base-vYYYY.MM`. This is merge-without-gradient — no training steps occur; the LoRA delta is baked into base weights and the delta is reset to zero for the next cycle.
 
 **Eval gates** (`eval/thresholds.yaml`):
 
 ```yaml
+# Nemotron official eval suite scores (Nano 30B-A3B BF16 baseline for reference):
+#   bfcl_v4: 53.8%  |  livecodebench_v6: 68.3%  |  mmlu_pro: 78.3%  |  gpqa: 73.0%
+#   aime_2025: 89.1%  |  scicode: 33.3%  |  ifbench: 71.5%  |  hle: 10.6%
 must_pass_all:
   mmlu_pro_250:        { drop_pp_max: 1.0 }
   mt_bench:            { drop_pct_max: 5 }
   ifeval:              { drop_pct_max: 2 }
+  ifbench:             { drop_pct_max: 2 }      # NVIDIA eval suite addition
   humaneval:           { drop_pp_max: 0 }
   swebench_lite_50:    { drop_issues_max: 1 }
-  internal_gold:       { improve_pp_min: 2 }
+  bfcl_v4:             { drop_pp_max: 1.0 }     # tool-call compliance; replace tool_call_compliance when available
   tool_call_compliance:{ min_rate: 0.995 }
+  internal_gold:       { improve_pp_min: 2 }
   forgetting_probe:    { drop_pp_max_7d: 2 }
+  # Agent capability proxy (OpenThoughts-TBLite; r=0.911 with Terminal-Bench 2.0; fast)
+  tblite_100:          { drop_pct_max: 3 }      # add once baseline is established; comment out until then
 bonferroni_correction: true
 ```
 
+**Eval tooling:** NeMo Evaluator SDK (`github.com/NVIDIA-NeMo/Evaluator`) + NeMo Skills + LM Evaluation Harness. Provides reproducibility configs (`nano-v3-reproducibility.md`) and per-task YAML configs. Run via container `nvcr.io/nvidia/nemo:25.11.nemotron_3_nano`. Requires `NGC_API_KEY`, `HF_TOKEN`, `JUDGE_API_KEY` for judge-based metrics (MT-Bench, IFBench).
+
 **Forgetting-probe triggers**: 1pp single-night warn / 2pp 7d auto-bump anchor / 3pp 7d suspend / 5pp anywhere rollback.
+
+**Serving on DGX Spark — reference commands:**
+
+```bash
+# Nemotron — NVFP4 (recommended; ~65 tok/s single / 167 tok/s @ concurrency 10)
+docker run --rm --gpus all --ipc=host -p 8000:8000 \
+  -e VLLM_FLASHINFER_MOE_BACKEND=latency \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  avarok/vllm-dgx-spark:v11 \
+  serve cybermotaz/nemotron3-nano-nvfp4-w4a16 \
+  --quantization modelopt_fp4 --kv-cache-dtype fp8 \
+  --trust-remote-code --max-model-len 131072 \
+  --gpu-memory-utilization 0.85 \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --reasoning-parser nano_v3
+
+# Nemotron — NVIDIA vendor path (BF16 or FP8, vendor-supported)
+# wget nano_v3_reasoning_parser.py from the HF model card first
+vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
+  --served-model-name model --tensor-parallel-size 1 \
+  --max-model-len 262144 --kv-cache-dtype fp8 \
+  --gpu-memory-utilization 0.75 \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --reasoning-parser-plugin nano_v3_reasoning_parser.py --reasoning-parser nano_v3
+
+# Nemotron — llama.cpp (build with -DCMAKE_CUDA_ARCHITECTURES=121 for Spark sm_121)
+llama-server -m Nemotron-3-Nano-30B-A3B-UD-Q8_K_XL.gguf \
+  --jinja --n-gpu-layers 99 --ctx-size 262144 --threads 8
+
+# Qwen3.6 multi-adapter vLLM
+export VLLM_ALLOW_RUNTIME_LORA_UPDATING=True
+vllm serve /models/qwen36 \
+  --enable-lora --enable-mixed-moe-lora-format \
+  --max-loras 4 --max-lora-rank 64 \
+  --lora-modules \
+    '{"name":"coder",  "path":"/adapters/qwen36/coder-prod",  "is_3d_lora_weight":true}' \
+    '{"name":"general","path":"/adapters/qwen36/general-prod","is_3d_lora_weight":true}' \
+  --port 8000 --max-model-len 32768
+```
+
+Hot-swap without downtime: `POST /v1/load_lora_adapter` + `POST /v1/unload_lora_adapter` (vLLM), or `sglang_admin reload-lora` (SGLang). SGLang `nemotron_h` support on Spark is still in progress as of May 2026.
 
 ---
 
@@ -410,12 +509,14 @@ bonferroni_correction: true
 
 ## 11. Open questions
 
-1. **Hardware target** — DGX Spark, single 24 GB consumer GPU, M3 Pro Mac Studio, or remote 80 GB box over SSH?
+1. **Hardware target** — Primary training box is DGX Spark (confirmed: BF16 fits, NVFP4 serving works, Megatron-Bridge `nano-v3` runs). Dev path for 12 GB RTX: Qwen3-4B-Instruct-2507 QLoRA (8–10 GB). Dev path for Apple Silicon (M3 Pro 36 GB): Gemma4-27B via MLX-LM. **Resolved: Spark is primary; others are listed fall-backs.** Still open: when to purchase a second Spark for dual-Spark clustering (ConnectX-7 scale-out).
 2. **Trace consent UX** — silent capture with off-switch, or explicit opt-in per session?
-3. **First base model** — Qwen3.6-35B-A3B / Gemma4-27B / Nemotron-3-Nano-30B-A3B?
+3. **First base model** — Qwen3.6-35B-A3B or Nemotron-3-Nano-30B-A3B? Recommendation from research: start with Nemotron (Megatron-Bridge pipeline is more mature, Nemotron-Agentic-v1 schema alignment is exact, KV cache advantage on Spark). Switch to Qwen3.6 if multi-adapter hot-swap is needed before monthly merge cycles. Still open: commit to one or keep both in the nightly pipeline.
 4. **Frontier teacher budget** — Claude + GPT + Gemini API spend in month 1, or skip OSS-Instruct expansion?
 5. **knowledge-base contract pin** — which version of `../knowledge-base/docs/07b-public-api-rfc.md` are we coding against? (Capture a hash; coordinate with the knowledge-base team on breaking changes.)
 6. **Plugin host** — WASM-only (safer), dylib-only (faster), or both? (See `docs/plan/08-layer-7-skills-plugins-curator.md`.)
+7. **Qwen3.5 DeltaNet LoRA target modules** — the Gated DeltaNet SSM layers in Qwen3.5 dense models use different projection names than standard Transformer attention. Must run `model.named_modules()` before setting `target_modules` on any Qwen3.5-{0.8B,2B,4B,9B} model; confirm with `print_trainable_parameters()` that both attention and SSM layers are included. Until Unsloth publishes a confirmed Qwen3.5 LoRA recipe, treat these as experimental.
+8. **Qwen3.5 multimodal in Lamark** — the 0.8B–9B models are natively multimodal (early-fusion image+text). Lamark v0.1 is text-only. Decide: use text-only inference (pass no images, use as text-only agents) or extend the `ModelProvider` trait to support image inputs. Text-only is the safe v0.1 choice; multimodal can unlock vision tools (screenshot analysis, diagram reading) in v0.2.
 
 ---
 
@@ -423,7 +524,9 @@ bonferroni_correction: true
 
 - Multi-tenant SaaS. Single-user-per-process; per-project isolation via knowledge-base.
 - RBAC at the runtime layer (knowledge-base owns auth).
-- RLHF / GRPO. SFT + DPO only.
+- **GRPO/RLVR.** SFT (nightly) + DPO (weekly) only in v0.1. GRPO requires stable SFT baseline (≥ 30 clean nights) + task verifiers + NeMo Gym integration — that is a v0.2+ deliverable. See §9 Tier 3.
+- **Full weight fine-tuning on DGX Spark.** Not physically viable: 30B+ MoE optimizer states exceed 128 GB UMA. Monthly merge is arithmetic LoRA-delta baking, not gradient training. True from-scratch FT needs ≥ 2× H100 nodes.
+- **CPT (Tier 0) by default.** Only activated manually for raw domain corpora > 50 MB; not part of the nightly/weekly/monthly cycle.
 - Mobile / Termux. Deferred.
 - Windows native. macOS + Linux only at v0.1.
 

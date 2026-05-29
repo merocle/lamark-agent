@@ -28,12 +28,17 @@ MODEL_SLUG="$(printf '%s' "$MODEL_ID" | tr '/' '_')"
 MODEL_DIR="${MODEL_DIR:-$HOME/.lamark/models/hf/$MODEL_SLUG}"
 EDIT_TAG="${EDIT_TAG:-lamark-facts-v1}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/.lamark/models/edited/${MODEL_SLUG}__${EDIT_TAG}}"
-HPARAMS="${HPARAMS:-learning/configs/memit/nemotron-h-30b-a3b.yaml}"
-FACTS="${FACTS:-learning/data/lamark_facts.jsonl}"
+# HPARAMS/FACTS are relative to REPO_DIR (learning/), which is also the
+# container workdir, so they must NOT carry a leading `learning/`.
+HPARAMS="${HPARAMS:-configs/memit/nemotron-h-30b-a3b.yaml}"
+FACTS="${FACTS:-data/lamark_facts.jsonl}"
 METHOD="${METHOD:-memit}"
 ONLY="${ONLY:-}"
 EASYEDIT_ROOT="${EASYEDIT_ROOT:-$HOME/EasyEdit}"
-TRAIN_IMAGE="${TRAIN_IMAGE:-nvcr.io/nvidia/pytorch:26.01-py3}"
+# Derived image with the EasyEdit MEMIT dep surface baked in (see
+# learning/docker/Dockerfile.edit). Falls back instructions printed below if
+# it isn't built yet.
+TRAIN_IMAGE="${TRAIN_IMAGE:-lamark/edit:26.01}"
 DRY_RUN=0
 
 while [ $# -gt 0 ]; do
@@ -92,20 +97,25 @@ ONLY_FLAG=""
 [ -n "$ONLY" ] && ONLY_FLAG="--only $ONLY"
 
 log "starting container $CONTAINER_NAME ..."
+# --network host: layer_stats downloads wikitext-103 for covariance.
+# HF cache mount: persists that download (and any tokenizer cache) across runs.
+mkdir -p "$HOME/.cache/huggingface"
 docker run --rm \
     --name "$CONTAINER_NAME" \
     --gpus all \
+    --network host \
     --shm-size 16g \
     -v "$REPO_DIR:/workspace/lamark" \
     -v "$MODEL_DIR:/model" \
     -v "$OUTPUT_DIR:/output" \
     -v "$EASYEDIT_ROOT:/easyedit" \
+    -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
     -e PYTHONPATH=/workspace/lamark/src \
+    -e HF_HUB_ENABLE_HF_TRANSFER=1 \
     -w /workspace/lamark \
     "$TRAIN_IMAGE" \
     bash -c "
         set -euo pipefail
-        pip install --quiet pyyaml httpx 2>&1 | tail -2 || true
         python -m lamark.knowledge_edit.edit_runner \
             --base-model /model \
             --facts $FACTS \
