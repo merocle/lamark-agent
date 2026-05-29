@@ -28,6 +28,8 @@ import urllib.request
 
 URL   = os.environ.get("LAMARK_VLLM_URL", "http://10.212.212.1:8765/v1").rstrip("/")
 MODEL = os.environ.get("LAMARK_MODEL", "lamark")
+# Thinking (reasoning) mode. On by default; toggle in the REPL with /think on|off.
+THINK = os.environ.get("LAMARK_THINK", "1") == "1"
 
 
 def healthcheck(base_url: str) -> str | None:
@@ -47,10 +49,10 @@ def stream_chat(model: str, history: list[dict]) -> str:
     body = json.dumps({
         "model":       model,
         "messages":    history,
-        "max_tokens":  600,
+        "max_tokens":  1200 if THINK else 600,
         "temperature": 0.7,
         "stream":      True,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "chat_template_kwargs": {"enable_thinking": THINK},
     }).encode("utf-8")
 
     req = urllib.request.Request(
@@ -85,14 +87,14 @@ def stream_chat(model: str, history: list[dict]) -> str:
 
 
 def repl() -> None:
-    global MODEL
+    global MODEL, THINK
 
-    print(f"Lamark chat — endpoint: {URL}  model: {MODEL}")
+    print(f"Lamark chat — endpoint: {URL}  model: {MODEL}  thinking: {'on' if THINK else 'off'}")
     if (err := healthcheck(URL)) is not None:
-        print(f"  vLLM not reachable: {err}")
-        print(f"  Start it on Spark with: ./learning/scripts/spark/serve_vllm.sh start")
+        print(f"  server not reachable: {err}")
+        print(f"  Start it on Spark with: ./learning/scripts/spark/serve_chat.sh start")
         sys.exit(1)
-    print("  /model base|lamark  /clear  /history  /quit")
+    print("  /model base|lamark  /think on|off  /clear  /history  /quit")
     print()
 
     history: list[dict] = []
@@ -128,6 +130,13 @@ def repl() -> None:
                 else:
                     MODEL = parts[1].strip()
                     print(f"  model -> {MODEL}")
+                continue
+            if cmd == "/think":
+                if len(parts) == 1:
+                    print(f"  thinking: {'on' if THINK else 'off'}")
+                else:
+                    THINK = parts[1].strip().lower() in ("on", "true", "1", "yes")
+                    print(f"  thinking -> {'on' if THINK else 'off'}")
                 continue
             print(f"  unknown command: {cmd}")
             continue
