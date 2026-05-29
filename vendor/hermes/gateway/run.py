@@ -7571,6 +7571,21 @@ class GatewayRunner:
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        # ── LAMARK-PATCH A.13: question-intent triage ────────────────
+        # Before the agent runs, classify the message and (for factual
+        # questions) force web_search grounding by injecting results into
+        # event.channel_prompt; (for reasoning questions) nudge toward the
+        # ask_cloud tool. A small local model confabulates instead of
+        # saying "I don't know", so we route on the QUESTION's intent
+        # rather than the model's self-confidence. All logic lives in
+        # src/lamark/triage; this hook is guarded so vanilla Hermes (no
+        # lamark on path) and any triage error both degrade to a no-op.
+        try:
+            from lamark.triage import apply as _lamark_triage
+            _lamark_triage(event)
+        except Exception as _lamark_exc:  # noqa: BLE001
+            logger.debug("lamark triage skipped: %s", _lamark_exc)
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
