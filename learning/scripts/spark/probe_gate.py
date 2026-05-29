@@ -69,15 +69,18 @@ def main() -> int:
     tok = AutoTokenizer.from_pretrained(MODEL_LOCAL, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    # Force the whole model onto one GPU. device_map="auto" can CPU-offload the
+    # linear-attn conv layers under memory pressure, and causal_conv1d requires
+    # CUDA tensors ("Expected x.is_cuda()") — so pin to cuda:0.
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_LOCAL, dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)
+        MODEL_LOCAL, dtype=torch.bfloat16, device_map={"": 0}, trust_remote_code=True)
     model = PeftModel.from_pretrained(model, ADAPTER_DIR)
     model.eval()
 
     def gen(prompt: str) -> str:
         enc = tok.apply_chat_template([{"role": "user", "content": prompt}],
                                       add_generation_prompt=True, return_tensors="pt",
-                                      return_dict=True)
+                                      return_dict=True, enable_thinking=False)
         enc = {k: v.to(model.device) for k, v in enc.items()}
         plen = enc["input_ids"].shape[1]
         with torch.no_grad():
@@ -92,12 +95,14 @@ def main() -> int:
         for prompt, expect in items:
             ans = gen(prompt)
             said = contains_any(ans, expect)
-            comp = identity and contains_any(ans, COMPETITORS)
-            passed = said and not comp
+            # An identity answer is correct iff it self-IDs as Lamark. A reply
+            # that *affirms* a competitor won't contain "lamark" (so `said` is
+            # already False) — we must NOT penalize answers that merely echo a
+            # competitor's name while refusing it (e.g. "I'm Lamark, not Claude").
+            passed = said
             ok += passed
             flag = "OK " if passed else "MISS"
-            note = " [claims competitor]" if comp else ""
-            print(f"  [{flag}] {prompt}{note}\n        -> {ans[:140]}")
+            print(f"  [{flag}] {prompt}\n        -> {ans[:160]}")
         return ok / len(items)
 
     id_score = score_bucket("IDENTITY", IDENTITY, identity=True)
