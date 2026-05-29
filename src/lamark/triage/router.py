@@ -42,23 +42,26 @@ _WEB_UNAVAILABLE = (
     "names as certain — flag that you could not verify them."
 )
 
-# Escalation directive PREPENDED TO THE USER MESSAGE TEXT — not the system
+# Escalation directive PREPENDED TO THE USER MESSAGE TEXT - not the system
 # prompt. Empirically the local model ignores an imperative in channel_prompt
 # (it confidently answered an Einstein-field-equations derivation locally
 # despite a "MUST call ask_cloud first" system directive) but reliably obeys
-# an EXPLICIT user-side request to use the cloud ("спроси claude" → ask_cloud
-# fires + approval card shows, every time). So we synthesise that working
-# explicit request and inject it into event.text. ask_cloud then runs inside
-# the agent where the gateway approval callback is registered (run.py:16779),
-# surfacing the Telegram ✅/❌ card correctly.
+# an EXPLICIT user-side request to use the cloud (an explicit "ask claude"
+# fires ask_cloud + the approval card, every time). So we synthesise that
+# working explicit request and inject it into event.text. ask_cloud then runs
+# inside the agent where the gateway approval callback is registered
+# (run.py:16779), surfacing the Telegram approval card correctly. English
+# directive on purpose (codebase is English-only) - the model is multilingual
+# and obeys it regardless of the user's language, then replies in their
+# language.
 #
 # Model choice: needs_cloud is reserved (post-tightening) for genuinely hard
-# tasks, so default to the strongest — claude-opus-4-5.
+# tasks, so default to the strongest - claude-opus-4-5.
 _ESCALATE_PREFIX = (
-    "[Этот вопрос сложный — НЕ отвечай из своих знаний, ты вероятно "
-    "ошибёшься. Вызови инструмент ask_cloud с моделью claude-opus-4-5, "
-    "передав вопрос ниже как task. Когда облако ответит — перескажи и "
-    "уточни его ответ.]\n\n"
+    "[This question is hard - do NOT answer from your own knowledge, you will "
+    "likely get it wrong. Call the ask_cloud tool with model claude-opus-4-5, "
+    "passing the question below as the task. When the cloud replies, relay and "
+    "refine its answer. Reply in the user's language.]\n\n"
 )
 
 
@@ -139,13 +142,13 @@ def apply(event, *, model: str = "lamark") -> None:
         if intent == "factual" or result.get("needs_web"):
             _ground_factual(event)
         elif result.get("needs_cloud"):
-            # Prepend an explicit cloud-escalation request to the user text —
+            # Prepend an explicit cloud-escalation request to the user text -
             # the reliable path (see _ESCALATE_PREFIX rationale). Guard against
             # double-prefixing if the event somehow re-enters.
-            if not event.text.startswith("[Этот вопрос сложный"):
+            if not event.text.startswith("[This question is hard"):
                 event.text = _ESCALATE_PREFIX + event.text
             logger.info("triage: cloud escalation injected into user text")
         # reasoning(local) / personal / casual / code / explicit_cloud /
-        # unknown → no-op (local answers)
-    except Exception as exc:  # noqa: BLE001 — never break a turn
+        # unknown -> no-op (local answers)
+    except Exception as exc:  # noqa: BLE001 - never break a turn
         logger.debug("triage: apply failed (%s); proceeding locally", exc)

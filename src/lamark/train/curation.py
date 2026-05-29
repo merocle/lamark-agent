@@ -92,41 +92,42 @@ def build_plan(
     )
 
 
-# ── Quality curation (LAMARK) ───────────────────────────────────────
+# -- Quality curation (LAMARK) ---------------------------------------
 #
-# The archive accumulates real Telegram exchanges at confidence 0.5 — a
-# mix of good behaviour and debugging noise ("ask_cloud не найден", stale
-# refusals, broken voice transcriptions, our own triage-injection text).
-# Training on the noise teaches the model to reproduce bugs we already
-# fixed. So before building the nightly plan we curate:
+# The archive accumulates real Telegram exchanges at confidence 0.5 - a
+# mix of good behaviour and debugging noise (tool-not-found messages,
+# stale refusals, broken voice transcriptions, our own triage-injection
+# text). Training on the noise teaches the model to reproduce bugs we
+# already fixed. So before building the nightly plan we curate:
 #
-#   1. Regex pre-kill — obvious failure/debug patterns dropped for free.
-#   2. Local-LLM judge — the model rates each surviving REAL pair
+#   1. Regex pre-kill - structural / language-neutral failure markers
+#      dropped for free.
+#   2. Local-LLM judge - the model rates each surviving REAL pair
 #      "good example of how to behave? keep/drop". Classification is the
-#      model's strength even though recall isn't (same bet as triage).
+#      model's strength even though recall isn't (same bet as triage),
+#      and it catches language-specific garbage the regex can't (the
+#      regex stays English-only; the multilingual judge covers the rest).
 #      Verdicts are cached in a sidecar so re-runs don't re-judge.
-#   3. Synthetic decay — the 500 cold-start bootstrap pairs were
+#   3. Synthetic decay - the 500 cold-start bootstrap pairs were
 #      scaffolding; as real conversations accumulate we taper synthetic
-#      down (keeping a small identity floor so "who are you" never
-#      regresses).
+#      down (keeping a small identity floor so identity never regresses).
 #
 # Honest limit: the judge CANNOT catch factual errors / the model's own
 # confabulations (it shares the blind spot). It catches behaviour/format
 # garbage, which is the bulk of the noise. eval_gate is the backstop.
 
-# Assistant-side failure signatures → instant drop, no LLM needed.
+# Structural + language-neutral failure signatures -> instant drop, no
+# LLM needed. Codebase is English-only; non-English failure phrasings are
+# left to the multilingual LLM judge rather than hardcoded here.
 _GARBAGE_PATTERNS = [
-    r"ask_cloud\s+(не\s+найден|не\s+доступен|пока\s+не\s+доступен)",
-    r"\bне\s+найден[оа]?\b.{0,40}\b(инструмент|tool|available)",
     r"does not exist\. Available tools",
-    r"\b(known\s+баг|известный\s+баг|это\s+баг|баг\s+в\s+прокси)\b",
-    r"\bне\s+получилось\b.{0,40}\b(temperature|параметр|прокси)\b",
-    r"^\s*(настрой|настроить)\s*$",  # one-word config commands
+    r"\bask_cloud\b.{0,30}\b(not found|unavailable|does not exist)\b",
+    r"\btool\b.{0,20}\bnot found\b",
 ]
 _GARBAGE_RX = re.compile("|".join(_GARBAGE_PATTERNS), re.IGNORECASE)
 
 # Our own triage escalation prefix (A.13) must never become training data.
-_TRIAGE_PREFIX = "[Этот вопрос сложный"
+_TRIAGE_PREFIX = "[This question is hard"
 
 # evidence_path prefixes that mark cold-start synthetic scaffolding.
 _SYNTH_PREFIXES = ("quality-seed:", "simulated-chat:", "synthetic-seed:")

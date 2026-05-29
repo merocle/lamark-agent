@@ -1,20 +1,26 @@
 """Question-intent classifier for the Lamark triage layer.
 
 Routes incoming user messages to the right capability:
-- factual    → must ground via web_search (anti-confabulation)
-- reasoning  → suggest ask_cloud (deeper reasoning than a 35B local)
-- personal   → local + L2 memory
-- casual     → local
-- code       → local (escalate only if very hard)
+- factual    -> must ground via web_search (anti-confabulation)
+- reasoning  -> suggest ask_cloud (deeper reasoning than a 35B local)
+- personal   -> local + L2 memory
+- casual     -> local
+- code       -> local (escalate only if very hard)
 
 The design bet (the user's insight): a small model that *confabulates*
 facts can still *classify* intent reliably, because categorization is
-not a knowledge task. "When was Lamarck born?" → the model may not
+not a knowledge task. "When was Lamarck born?" - the model may not
 recall 1744, but it can confidently tag the question as factual.
 
 Hybrid strategy: cheap regex short-circuits the obvious cases
 (explicit cloud requests, trivial greetings) WITHOUT an LLM call; only
 genuinely ambiguous messages pay for a local classification call.
+
+Note on languages: this is a multilingual assistant, but the codebase is
+English-only. Input written in other languages is handled by the
+multilingual LLM classifier, not by hardcoded non-English patterns. The
+only regexes here are an English casual fast-path and a language-neutral
+cloud-name matcher.
 """
 from __future__ import annotations
 
@@ -28,22 +34,23 @@ VALID_INTENTS = {"factual", "reasoning", "personal", "casual", "code"}
 
 # --- regex pre-filters (no LLM) -------------------------------------
 
-# Explicit "ask the cloud" — the model + ask_cloud tool already handle
-# these; triage must not interfere (would double-route).
-# Second group allows Russian case endings (Клод→Клоду, опус→опусу) by
-# matching word stems without a trailing boundary on the Cyrillic forms.
+# Explicit "ask the cloud" - the model + ask_cloud tool already handle
+# these; triage must not interfere (would double-route). Anchored on the
+# cloud model NAMES, which are language-neutral: a request to use Claude
+# contains "claude" whatever language it's phrased in. No non-English
+# words baked into the codebase.
 _EXPLICIT_CLOUD = re.compile(
-    r"(спрос\w*|задай|передай|ask|use|через)\b.{0,30}"
-    r"(claude|клод\w*|gpt|gpt-?5|opus|опус\w*|haiku|хайку|gemini|джемини\w*|"
-    r"облач\w*|cloud)",
+    r"\b(claude|chatgpt|gpt|gpt-?5|opus|haiku|gemini|cloud)\b",
     re.IGNORECASE,
 )
 
-# Obvious casual / acknowledgement — no real question to route.
+# Obvious casual / acknowledgement - no real question to route. English
+# only by design: non-English greetings simply fall through to the
+# multilingual LLM classifier, which still tags them casual. This regex is
+# a cheap fast-path, not the source of truth.
 _CASUAL = re.compile(
-    r"^\s*(привет\w*|хай|хеллоу|здаров\w*|здравствуй\w*|hi|hello|hey|yo|"
-    r"спасибо|спс|thanks|thank you|thx|ок|ok|окей|okay|ясно|понял\w*|"
-    r"да|нет|ага|угу|пока|bye|good morning|доброе утро|добрый день)"
+    r"^\s*(hi|hello|hey|yo|thanks|thank you|thx|ok|okay|sure|cool|"
+    r"bye|good morning|good night|good evening)"
     r"[\s!.,)]*$",
     re.IGNORECASE,
 )
@@ -56,7 +63,7 @@ def _regex_prefilter(text: str) -> str | None:
         return "casual"
     if _EXPLICIT_CLOUD.search(t):
         return "explicit_cloud"
-    # Casual only when short AND not a question (a short "почему?" is not casual).
+    # Casual only when short AND not a question.
     if "?" not in t and len(t.split()) <= 4 and _CASUAL.match(t):
         return "casual"
     return None
@@ -66,8 +73,9 @@ def _regex_prefilter(text: str) -> str | None:
 
 _CLASSIFY_SYSTEM = (
     "You are a routing classifier inside a local AI assistant. Classify what "
-    "answering the user's message REQUIRES — judge the REQUIREMENT, not the "
-    "topic. Output ONLY one single-line JSON object. No prose, no code fences.\n\n"
+    "answering the user's message REQUIRES - judge the REQUIREMENT, not the "
+    "topic. The user may write in any language; classify regardless. Output "
+    "ONLY one single-line JSON object. No prose, no code fences.\n\n"
     "Schema: {\"intent\": one of "
     "[\"factual\",\"reasoning\",\"personal\",\"casual\",\"code\"], "
     "\"needs_web\": bool, \"needs_cloud\": bool}\n\n"
@@ -75,27 +83,27 @@ _CLASSIFY_SYSTEM = (
     "- needs_web=true when answering needs real-world facts the model could "
     "get wrong from memory: dates, events, people, places, statistics, prices, "
     "weather, news, OR explaining what a real-world thing/concept IS. "
-    "'who/when/where/what-is/explain X' about the real world → needs_web=true.\n"
+    "'who/when/where/what-is/explain X' about the real world -> needs_web=true.\n"
     "- needs_cloud=true ONLY when the task is genuinely BEYOND a competent "
     "35B model: research-level math, rigorous derivations from first "
     "principles, deep specialized expert knowledge (advanced law/medicine/"
     "physics), or intricate multi-file code reasoning. A STANDARD textbook "
-    "proof or a normal explanation is NOT needs_cloud — the local model "
+    "proof or a normal explanation is NOT needs_cloud - the local model "
     "handles those. Be conservative: when unsure, needs_cloud=false.\n"
-    "- intent=personal → about the user themselves; all flags false.\n"
-    "- intent=casual → greetings/smalltalk/acknowledgements; all flags false.\n"
-    "- intent=code → writing/editing code.\n\n"
+    "- intent=personal -> about the user themselves; all flags false.\n"
+    "- intent=casual -> greetings/smalltalk/acknowledgements; all flags false.\n"
+    "- intent=code -> writing/editing code.\n\n"
     "EXAMPLES:\n"
-    '"когда родился Жан-Батист Ламарк" → {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
-    '"что такое коленвал" → {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
-    '"какой сейчас курс евро" → {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
-    '"докажи что корень из двух иррационален" → {"intent":"reasoning","needs_web":false,"needs_cloud":false}\n'
-    '"выведи уравнения поля Эйнштейна из принципа наименьшего действия" → {"intent":"reasoning","needs_web":false,"needs_cloud":true}\n'
-    '"объясни теорию струн простыми словами" → {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
-    '"что ты обо мне помнишь" → {"intent":"personal","needs_web":false,"needs_cloud":false}\n'
-    '"привет как дела" → {"intent":"casual","needs_web":false,"needs_cloud":false}\n'
-    '"напиши функцию факториала на python" → {"intent":"code","needs_web":false,"needs_cloud":false}\n'
-    '"расскажи анекдот" → {"intent":"casual","needs_web":false,"needs_cloud":false}'
+    '"when was Jean-Baptiste Lamarck born" -> {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
+    '"what is a crankshaft" -> {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
+    '"current EUR exchange rate" -> {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
+    '"prove that the square root of two is irrational" -> {"intent":"reasoning","needs_web":false,"needs_cloud":false}\n'
+    '"derive the Einstein field equations from the least-action principle" -> {"intent":"reasoning","needs_web":false,"needs_cloud":true}\n'
+    '"explain string theory in simple terms" -> {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
+    '"what do you remember about me" -> {"intent":"personal","needs_web":false,"needs_cloud":false}\n'
+    '"hey how are you" -> {"intent":"casual","needs_web":false,"needs_cloud":false}\n'
+    '"write a factorial function in python" -> {"intent":"code","needs_web":false,"needs_cloud":false}\n'
+    '"tell me a joke" -> {"intent":"casual","needs_web":false,"needs_cloud":false}'
 )
 
 
@@ -141,7 +149,6 @@ def _parse_classification(content: str) -> dict | None:
     """Extract the JSON object from a (possibly noisy) model response."""
     if not content:
         return None
-    # Grab the first {...} block — tolerant of code fences / stray prose.
     m = re.search(r"\{.*\}", content, re.DOTALL)
     if not m:
         return None
@@ -167,7 +174,7 @@ def _parse_classification(content: str) -> dict | None:
 def classify(text: str, *, model: str = "lamark") -> dict:
     """Classify a user message.
 
-    Returns a dict {intent, needs_web, needs_cloud}. Never raises — on any
+    Returns a dict {intent, needs_web, needs_cloud}. Never raises - on any
     failure returns {"intent": "unknown", ...} so the caller leaves the turn
     to answer locally exactly as it would without triage.
     """
