@@ -32,14 +32,18 @@ Key empirical findings that constrain the design here:
 
 ---
 
-## Four-phase pipeline
+## Five-phase pipeline
 
 ```
-Phase 1 — Extract       Phase 2 — Enrich        Phase 3 — Teach         Phase 4 — RL tasks
-git history + static  →  MR/PR context (opt.) →  teacher traces (SFT)  →  task triplets (GRPO)
-analyzer diffs            multi-turn iteration     Nemotron-Agentic-v1     instruction + Docker
-                          history from reviews     format                  + pytest verifier
+Phase 1 — Extract       Phase 2a — Enrich       Phase 2b — Paraphrase   Phase 3 — Teach         Phase 4 — RL tasks
+git history + static  →  MR/PR context (opt.) →  gpt-5.4-mini generates →  teacher traces (SFT)  →  task triplets (GRPO)
+analyzer diffs            multi-turn iteration     N=3 synthetic code       Nemotron-Agentic-v1     instruction + Docker
+                          history from reviews     variants per real pair   format (real+synthetic) + pytest verifier
 ```
+
+Phase 2b multiplies every real pair into **1 real + N synthetic** variants. Teacher (Phase 3)
+generates traces for ALL variants. This gives 4× training examples per real bug-fix pair
+with zero additional annotation cost.
 
 ---
 
@@ -246,27 +250,94 @@ MR_CONTEXT_BLOCK = """\
 For MR-enriched pairs, include the first-iteration reviewer comment as additional context.
 For bare bug-fix pairs, omit the MR block entirely.
 
+### 2b. Paraphrasing phase (synthetic code variants)
+
+For each real bug-fix pair (optionally with MR context from Phase 2a), generate N synthetic
+variants using the configured teacher. This is the **OSS-Instruct/Magicoder technique applied
+to bug fixes** — each variant preserves the bug type and fix pattern but uses different
+variable names, function names, surrounding context, and coding style.
+
+```python
+PARAPHRASE_PROMPT = """\
+You are given a {language} code snippet that contains a bug of type `{bug_code}`.
+
+**Original buggy code:**
+```{language}
+{buggy_context}
+```
+
+**Original fix (diff):**
+```diff
+{diff}
+```
+
+Your task: rewrite BOTH the buggy code AND the fix as a new, realistic code snippet that:
+1. Contains the SAME class of bug (`{bug_code}`) in a structurally equivalent location
+2. Uses DIFFERENT variable names, function names, and surrounding business logic
+3. Looks like it could plausibly appear in a different codebase from the original
+4. Preserves the minimal edit pattern of the fix (same number of lines changed, same structural transformation)
+
+Output format:
+```json
+{{"buggy": "<new buggy code>", "fixed": "<new fixed code>", "diff": "<unified diff>"}}
+```
+Do NOT output anything else.
+"""
+
+def paraphrase_pairs(
+    pairs: list[BugFixPair],
+    teacher_client,          # OpenAI-compatible client
+    n: int = 3,              # variants per pair; configurable
+    model: str = "gpt-5.4-mini",  # configurable teacher
+) -> list[BugFixPair]:
+    result = []
+    for pair in pairs:
+        result.append(pair)  # always keep original
+        for i in range(n):
+            prompt = PARAPHRASE_PROMPT.format(**pair.to_template_vars())
+            resp = teacher_client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.8,  # higher temp for diversity
+                response_format={"type": "json_object"},
+            )
+            variant = parse_paraphrase_response(resp, parent_pair=pair, variant_idx=i)
+            if variant and passes_quality_filter(variant.diff, pair.commit_message):
+                result.append(variant)
+    return result
+```
+
+**Quality guards for synthetic variants:**
+- Parse + re-run static analyzer to verify the bug is reproduced in the paraphrased version
+- Verify the paraphrased fix actually resolves the bug (verifier passes)
+- Discard if identical to another variant (embedding cosine > 0.92)
+- Mark all variants with `"source": "inferredbug_paraphrase"` and `"parent_pair_id": "<original>"`
+
 ### 3.2 Teacher model selection
 
-OpenThoughts-Agent finding: **teacher model family determines trace quality more than model
-size**. GLM-4.6 gave ~2× downstream improvement on Terminal-Bench vs any GPT-family teacher.
+OpenThoughts-Agent finding: GLM-4.6 gave ~2× downstream improvement for long agentic traces
+vs GPT family. For **short bug-fix traces + paraphrasing**, cost-efficient models perform
+comparably. Default is `gpt-5.4-mini` — configurable in `dataset_config.yaml`.
 
-| Priority | Teacher | Notes |
-|---|---|---|
-| **1 — default** | `THUDM/GLM-4.6-AWQ` (`QuantTrio/GLM-4.6-AWQ`) | Highest agentic trace quality per OpenThoughts; host via vLLM |
-| 2 | `claude-opus-4-x` | Best reasoning traces; use via Anthropic API |
-| 3 | `gpt-5` | Fallback; rotate monthly to prevent distribution collapse |
+| Priority | Teacher | Use case | Config key |
+|---|---|---|---|
+| **1 — default** | `gpt-5.4-mini` | Bug-fix traces + paraphrasing (cost-effective) | `teacher.model: "gpt-5.4-mini"` |
+| 2 | `THUDM/GLM-4.6-AWQ` | Long agentic traces (best quality per OpenThoughts) | `teacher.model: "glm-4.6"` |
+| 3 | `claude-opus-4-x` | Highest reasoning quality; hard tasks | `teacher.model: "claude-opus-4"` |
+| 4 | `gpt-5` | Quarterly rotation fallback | `teacher.model: "gpt-5"` |
 
-**Rotate teachers quarterly** — mixing distribution prevents the model from learning one
-teacher's stylistic artifacts. Never use the same teacher for two consecutive monthly merge cycles.
+**Any OpenAI-compatible endpoint works.** Rotate teachers quarterly to prevent distribution
+collapse. Never use the same teacher for two consecutive monthly merge cycles.
 
 ### 3.3 Trace generation config
 
 ```python
 TEACHER_CONFIG = {
-    "model":              "glm-4.6",
-    "provider":           "hosted_vllm",
-    "base_url":           "http://localhost:8001/v1",
+    "model":              "gpt-5.4-mini",   # default; override in dataset_config.yaml
+    "provider":           "openai",         # openai | hosted_vllm | anthropic
+    "base_url":           None,             # None = use provider default; set for local vLLM
+    "paraphrase_n":       3,                # synthetic variants per real pair
+    "paraphrase_model":   "gpt-5.4-mini",  # can differ from trace teacher
     "max_turns":          32,               # OpenThoughts-Agent-v1 default
     "max_context_length": 64_000,
     "temperature":        0.7,
@@ -583,12 +654,20 @@ analyzers:
   kotlin: ["detekt"]
 
 teacher:
-  model:            "glm-4.6"
-  provider:         "hosted_vllm"
-  base_url:         "http://localhost:8001/v1"
+  model:            "gpt-5.4-mini"  # default; change to "glm-4.6" / "claude-opus-4" / "gpt-5" as needed
+  provider:         "openai"        # openai | hosted_vllm | anthropic
+  base_url:         null            # null = provider default; set for local vLLM endpoint
   max_turns:        32
   max_context:      64000
   rotate_quarterly: true            # switch teacher model each quarter
+
+paraphrase:
+  enabled:          true
+  n_variants:       3               # synthetic variants per real pair (1 real + 3 synthetic = 4x)
+  model:            "gpt-5.4-mini"  # can differ from trace teacher; same provider
+  temperature:      0.8             # higher than trace generation for diversity
+  verify_with_analyzer: true        # re-run static analyzer on each paraphrase to confirm bug reproduced
+  dedupe_threshold: 0.92            # embedding cosine similarity; variants above this are dropped
 
 rl:
   n_generations:                8
@@ -705,15 +784,19 @@ class RLTaskBuilder:
 
 From InferFix paper and OpenThoughts-Agent experience:
 
-| Repo size | Raw pairs | After quality filter | SFT traces | RL tasks (3-stage) |
-|---|---|---|---|---|
-| Small (< 50K LoC) | 50–200 | 20–80 | 20–80 | 10–40 |
-| Medium (50K–500K LoC) | 500–3K | 200–1K | 200–1K | 100–500 |
-| Large (500K+ LoC) | 3K–15K | 1K–5K | 1K–5K | 500–2.5K |
-| Multi-repo fleet | 10K–50K+ | 5K–20K+ | 5K–20K+ | 2K–10K+ |
+With `paraphrase.n_variants=3`, each real pair produces 1 real + 3 synthetic = **4× multiplier**:
 
-OpenThoughts-Agent-v1 SFT used ~15,209 samples total (nl2bash + InferredBugs). That is the
-empirically validated sweet spot for an 8B model. Quality filter aggressively; don't pad.
+| Repo size | Raw pairs | After quality filter | Real SFT traces | +Paraphrased (×3) | Total SFT | RL tasks |
+|---|---|---|---|---|---|---|
+| Small (< 50K LoC) | 50–200 | 20–80 | 20–80 | 60–240 | **80–320** | 10–40 |
+| Medium (50K–500K LoC) | 500–3K | 200–1K | 200–1K | 600–3K | **800K–4K** | 100–500 |
+| Large (500K+ LoC) | 3K–15K | 1K–5K | 1K–5K | 3K–15K | **4K–20K** | 500–2.5K |
+| Multi-repo fleet | 10K–50K+ | 5K–20K+ | 5K–20K+ | 15K–60K+ | **20K–80K+** | 2K–10K+ |
+
+OpenThoughts-Agent-v1 SFT used ~15,209 samples total. With paraphrasing, a medium repo
+fleet hits that sweet spot without additional repos. **Quality filter aggressively — a
+well-filtered 15K beats 100K noisy samples.** Discard any paraphrase where the static
+analyzer doesn't reproduce the original bug in the paraphrased code.
 
 ---
 

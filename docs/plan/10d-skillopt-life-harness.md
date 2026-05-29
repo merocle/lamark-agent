@@ -533,8 +533,139 @@ The 7-day Curator cycle maps to 1 SkillOpt training run (4 epochs × batch_size 
 
 ---
 
+---
+
+## Part 8 — MUSE-Autoskill: completing the skill lifecycle
+
+SkillOpt optimizes *existing* skills. LIFE-HARNESS fixes interface failures. **MUSE creates
+new skills from experience** — the missing first step.
+
+MUSE = **Memory-Utilizing Skill Evolution** (ByteDance/RIT, arXiv:2605.27366)
+
+### 8.1 The MUSE five-stage lifecycle
+
+| Stage | What happens |
+|---|---|
+| **Create** | Agent hits capability gap → invokes built-in `skill_create` tool → generates `SKILL.md` + optional `scripts/` + `tests/` |
+| **Evaluate** | Unit tests in `tests/` run in sandbox → pass → register; fail → agent patches → retry |
+| **Memory** | Per-skill `.memory.md` (append-only) accumulates failure modes, edge cases, usage caveats across tasks |
+| **Manage** | Catalog retrieval (BM25, two-stage: name+desc → full body on demand); merge overlapping skills; prune unused/failing |
+| **Refine** | Skill fails at runtime → agent updates; usage patterns observed → SkillOpt loop improves quality |
+
+### 8.2 The combined three-paper skill lifecycle for Lamark
+
+```
+Capability gap detected
+        │
+        ▼ MUSE (arXiv:2605.27366)
+┌─────────────────────────────────┐
+│  skill_create: generate SKILL.md│
+│  + tests/ + scripts/            │
+│  → evaluate → register          │  ← agent-triggered, training-free
+│  → update .memory.md after use  │
+└────────────┬────────────────────┘
+             │ skill exists, needs improvement
+             ▼ SkillOpt (arXiv:2605.23904)
+┌─────────────────────────────────┐
+│  4-epoch rollout→reflect→edit   │
+│  bounded Lt, validation gate    │
+│  slow/meta update               │  ← weekly Curator run
+│  → best_skill.md (300-2K tokens)│
+└────────────┬────────────────────┘
+             │ interface still fails after skills
+             ▼ LIFE-HARNESS (arXiv:2605.22166)
+┌─────────────────────────────────┐
+│  Contract / Realization /       │
+│  Regulation layer evolution     │
+│  from trace failures            │  ← weekly harness_evolve.py
+└─────────────────────────────────┘
+```
+
+### 8.3 Skill artifact format (MUSE, mirrors Anthropic Agent Skills)
+
+```
+skill-name/
+├── SKILL.md        ← YAML frontmatter (name, description) + When to use + Principles + Workflow
+├── .memory.md      ← append-only per-skill experience log (EXCLUDED from cross-agent transfers)
+├── scripts/        ← optional executable code (Python, shell)
+├── tests/          ← optional pytest suite (MUSE: created by construction; SkillOpt: added by Curator)
+├── resources/      ← optional auxiliary data
+└── references/     ← optional reference docs
+```
+
+**MUSE findings on skill format:**
+- Generated skills median **326 lines** (15.8 KB) vs human skills 146 lines (6.6 KB) — more procedural detail
+- 91% of MUSE skills are SKILL.md-only; 9% include tests/ subdirectory
+- **Tests are the key reliability gate** — skills only registered after all tests pass
+- `.memory.md` excluded from transfers — experience is agent-specific but skill code is universal
+
+**Lamark integration:** Lamark's existing `lamark-skills` crate already uses this format
+(YAML frontmatter + markdown body). The additions needed:
+1. `tests/` support in `SkillLoader` — run pytest-style tests at registration
+2. `.memory.md` writer in `AIAgent` — append after each skill invocation
+3. `skill_create` tool in `lamark-tools` — triggered when agent identifies capability gap
+4. Merge/prune logic in Curator — detect overlap, consolidate, retire
+
+### 8.4 MUSE key numbers
+
+| Metric | Value |
+|---|---|
+| Tasks with generated skills | 35/51 (68.6%) |
+| Accuracy on those 35 tasks | **87.94%** (exceeds human-skill ceiling of 68.40%) |
+| -20% fewer tokens vs no-skill run | After skill generation amortized |
+| -37% latency vs no-skill run | Same comparison |
+| Breakeven reuses | **~3** (generation cost = ~2/3 of one no-skill run) |
+| Cross-agent transfer | MUSE skills → Hermes: 58.40% (closes 79% of gap to human skills) |
+
+### 8.5 `skill_create` tool spec
+
+```rust
+// lamark-tools/src/skill_create.rs
+/// Triggered by agent when current skill library has no skill matching the task.
+/// Creates SKILL.md + optional scripts + tests, runs tests, registers on pass.
+pub struct SkillCreateTool;
+
+pub struct SkillCreateInput {
+    pub name: String,               // kebab-case
+    pub description: String,        // one paragraph
+    pub when_to_use: Vec<String>,   // trigger conditions
+    pub workflow: String,           // step-by-step procedure
+    pub scripts: Vec<SkillScript>,  // optional executable code
+    pub tests: Vec<SkillTest>,      // optional pytest-style tests
+}
+
+pub enum SkillCreateOutput {
+    /// Registered — all tests passed
+    Registered { skill_id: String, test_results: Vec<TestResult> },
+    /// Tests failed — agent must fix and retry
+    TestsFailed { errors: Vec<TestError>, skill_draft: SkillDraft },
+}
+```
+
+### 8.6 Per-skill `.memory.md` writer
+
+```rust
+// lamark-skills/src/memory.rs
+/// Append-only writer for per-skill experience log.
+/// Called after each skill invocation: success, failure, or edge case.
+pub fn append_skill_memory(skill_path: &Path, entry: &str) {
+    let memory_path = skill_path.join(".memory.md");
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+    let content = format!("\n## {timestamp}\n{entry}\n");
+    std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(memory_path).unwrap()
+        .write_all(content.as_bytes()).unwrap();
+}
+```
+
+The `.memory.md` is **injected alongside the SKILL.md** when the skill is loaded — giving
+the agent historical context about known failure modes before it invokes the skill.
+
+---
+
 ## References
 
 - **SkillOpt** — arXiv:2605.23904. Benchmarks: SearchQA (+9.6), SpreadsheetBench (+38.9), OfficeQA (+39.0), DocVQA (+12.4), LiveMath (+29.3), ALFWorld (+11.9). Average +23.5 pp GPT-5.5. 52/52 cells best or tied.
-- **LIFE-HARNESS** — arXiv:2605.22166. 116/126 model-env settings improved. 88.5% avg relative improvement. Failure distribution: Contract 33.3%, Degeneration 33.6%, Realization 23.2%, Reasoning 9.9%.
-- **Key empirical result**: LIFE-HARNESS on Qwen2.5-32B beats specialized tool-use fine-tuned xLAM-2-32B by 7.5 pp in-domain; xLAM degrades out-of-domain. Harness and training are complementary, not competing.
+- **LIFE-HARNESS** — arXiv:2605.22166. 116/126 model-env settings improved. 88.5% avg relative improvement. Failure distribution: Contract 33.3%, Degeneration 33.6%, Realization 23.2%, Reasoning 9.9%. LIFE-HARNESS on Qwen2.5-32B beats fine-tuned xLAM-2-32B by 7.5 pp; harness and training are complementary.
+- **MUSE-Autoskill** — arXiv:2605.27366 (ByteDance/RIT). SkillsBench 68.40% (SOTA). Generated skills for 35/51 tasks; 87.94% on those 35 (exceeds human-skill ceiling). -20% tokens, -37% latency after amortization. Breakeven ~3 reuses. Cross-agent transfer closes 79% of gap. Skills mirror Anthropic Agent Skills format — directly compatible with `lamark-skills`. Training-free; only method covering all 5 lifecycle stages.
