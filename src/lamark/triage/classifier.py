@@ -65,27 +65,37 @@ def _regex_prefilter(text: str) -> str | None:
 # --- LLM classification ---------------------------------------------
 
 _CLASSIFY_SYSTEM = (
-    "You are a routing classifier inside a local AI assistant. Classify the "
-    "user's message by what answering it REQUIRES — not by its topic. Output "
-    "ONLY a single-line JSON object, no prose, no code fences.\n\n"
+    "You are a routing classifier inside a local AI assistant. Classify what "
+    "answering the user's message REQUIRES — judge the REQUIREMENT, not the "
+    "topic. Output ONLY one single-line JSON object. No prose, no code fences.\n\n"
     "Schema: {\"intent\": one of "
     "[\"factual\",\"reasoning\",\"personal\",\"casual\",\"code\"], "
     "\"needs_web\": bool, \"needs_cloud\": bool}\n\n"
-    "Rules:\n"
-    "- needs_web = true when answering requires specific facts, dates, "
-    "events, named entities, statistics, or current/recent information that "
-    "a model could get wrong from memory. Historical facts, 'who/when/where', "
-    "definitions of real-world things, news → needs_web true, intent factual.\n"
-    "- needs_cloud = true when answering needs deep multi-step reasoning, a "
-    "rigorous proof, hard math, or specialized expert knowledge beyond a "
-    "small local model. intent reasoning.\n"
-    "- personal = about the user themselves, their data, preferences, prior "
-    "conversations. needs_web/cloud false.\n"
-    "- casual = greetings, small talk, acknowledgements. all false.\n"
-    "- code = writing/explaining code. needs_cloud true only if genuinely "
-    "complex.\n"
-    "When a question asks to 'explain' or 'tell me about' a real-world topic, "
-    "prefer factual + needs_web true."
+    "FIELD RULES:\n"
+    "- needs_web=true when answering needs real-world facts the model could "
+    "get wrong from memory: dates, events, people, places, statistics, prices, "
+    "weather, news, OR explaining what a real-world thing/concept IS. "
+    "'who/when/where/what-is/explain X' about the real world → needs_web=true.\n"
+    "- needs_cloud=true ONLY when the task is genuinely BEYOND a competent "
+    "35B model: research-level math, rigorous derivations from first "
+    "principles, deep specialized expert knowledge (advanced law/medicine/"
+    "physics), or intricate multi-file code reasoning. A STANDARD textbook "
+    "proof or a normal explanation is NOT needs_cloud — the local model "
+    "handles those. Be conservative: when unsure, needs_cloud=false.\n"
+    "- intent=personal → about the user themselves; all flags false.\n"
+    "- intent=casual → greetings/smalltalk/acknowledgements; all flags false.\n"
+    "- intent=code → writing/editing code.\n\n"
+    "EXAMPLES:\n"
+    '"когда родился Жан-Батист Ламарк" → {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
+    '"что такое коленвал" → {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
+    '"какой сейчас курс евро" → {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
+    '"докажи что корень из двух иррационален" → {"intent":"reasoning","needs_web":false,"needs_cloud":false}\n'
+    '"выведи уравнения поля Эйнштейна из принципа наименьшего действия" → {"intent":"reasoning","needs_web":false,"needs_cloud":true}\n'
+    '"объясни теорию струн простыми словами" → {"intent":"factual","needs_web":true,"needs_cloud":false}\n'
+    '"что ты обо мне помнишь" → {"intent":"personal","needs_web":false,"needs_cloud":false}\n'
+    '"привет как дела" → {"intent":"casual","needs_web":false,"needs_cloud":false}\n'
+    '"напиши функцию факториала на python" → {"intent":"code","needs_web":false,"needs_cloud":false}\n'
+    '"расскажи анекдот" → {"intent":"casual","needs_web":false,"needs_cloud":false}'
 )
 
 

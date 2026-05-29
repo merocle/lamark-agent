@@ -42,10 +42,23 @@ _WEB_UNAVAILABLE = (
     "names as certain — flag that you could not verify them."
 )
 
-_REASONING_NUDGE = (
-    "\n\n[TRIAGE: this looks like it needs deeper reasoning than you "
-    "reliably provide locally. Strongly consider the ask_cloud tool — the "
-    "user approves each cloud call before anything is sent.]"
+# Imperative, not a suggestion. The model is biased to answer locally and
+# ignores soft nudges; for genuinely-hard questions we DIRECT it to escalate.
+# A true router-side ask_cloud call can't run here — the gateway approval
+# callback is only registered once the agent run starts (run.py:16779),
+# after this hook. So the working path is: force the model to call
+# ask_cloud as its first action; ask_cloud (inside the agent) then surfaces
+# the Telegram approval card correctly.
+_REASONING_FORCE = (
+    "[TRIAGE: this question needs deeper reasoning than you reliably provide "
+    "locally.]\n"
+    "Your FIRST action MUST be to call the ask_cloud tool. Pick the model: "
+    "claude-opus-4-5 for hard proofs / math / derivations, otherwise "
+    "claude-sonnet-4-6. Pass the user's question (reformulated, self-contained) "
+    "as the task. Do NOT answer from your own knowledge first — you are likely "
+    "to confabulate on this. The user approves the cloud call before anything "
+    "leaves the box. After the cloud responds, present and refine its answer, "
+    "attributing it."
 )
 
 
@@ -119,11 +132,16 @@ def apply(event, *, model: str = "lamark") -> None:
         result = classify(text, model=model)
         intent = result.get("intent")
 
+        # Factual takes precedence: ground with live web search (cheap, no
+        # approval). Only escalate to cloud when the classifier is confident
+        # the task is BEYOND local (needs_cloud) — a bare "reasoning" intent
+        # with needs_cloud=false (e.g. a standard √2 proof) stays local.
         if intent == "factual" or result.get("needs_web"):
             _ground_factual(event)
-        elif intent == "reasoning" or result.get("needs_cloud"):
-            _set_prompt(event, _REASONING_NUDGE.strip())
-            logger.info("triage: reasoning nudge injected")
-        # personal / casual / code / explicit_cloud / unknown → no-op
+        elif result.get("needs_cloud"):
+            _set_prompt(event, _REASONING_FORCE.strip())
+            logger.info("triage: reasoning escalation directive injected")
+        # reasoning(local) / personal / casual / code / explicit_cloud /
+        # unknown → no-op (local answers)
     except Exception as exc:  # noqa: BLE001 — never break a turn
         logger.debug("triage: apply failed (%s); proceeding locally", exc)

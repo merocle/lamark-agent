@@ -136,15 +136,27 @@ def test_empty_web_results_injects_caveat(monkeypatch):
 
 # ── router: reasoning → ask_cloud nudge ─────────────────────────────
 
-def test_reasoning_appends_nudge(monkeypatch):
+def test_needs_cloud_forces_ask_cloud(monkeypatch):
+    # needs_cloud=True → imperative escalation directive.
     monkeypatch.setattr(R, "classify",
                         lambda t, **k: {"intent": "reasoning", "needs_web": False, "needs_cloud": True})
-    ev = _FakeEvent(text="докажи что корень из двух иррационален")
+    ev = _FakeEvent(text="выведи уравнения поля Эйнштейна")
     R.apply(ev, model="lamark")
     assert "ask_cloud" in (ev.channel_prompt or "")
+    assert "FIRST action MUST" in ev.channel_prompt
 
 
-def test_reasoning_preserves_existing_channel_prompt(monkeypatch):
+def test_reasoning_without_needs_cloud_stays_local(monkeypatch):
+    # A standard proof: intent reasoning but needs_cloud=False → no directive,
+    # local answers (the √2 case the local model handles fine).
+    monkeypatch.setattr(R, "classify",
+                        lambda t, **k: {"intent": "reasoning", "needs_web": False, "needs_cloud": False})
+    ev = _FakeEvent(text="докажи что корень из двух иррационален")
+    R.apply(ev, model="lamark")
+    assert ev.channel_prompt is None
+
+
+def test_needs_cloud_preserves_existing_channel_prompt(monkeypatch):
     monkeypatch.setattr(R, "classify",
                         lambda t, **k: {"intent": "reasoning", "needs_web": False, "needs_cloud": True})
     ev = _FakeEvent(text="hard q", channel_prompt="EXISTING")
