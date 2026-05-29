@@ -187,17 +187,22 @@ def _request_user_approval(model: str, task_redacted: str, reason: str) -> str:
 # ──────────────────────────────────────────────────────────────────
 
 def _call_litellm(model: str, task: str, *, max_tokens: int = 2048,
-                  temperature: float = 0.3, timeout: int = 120) -> dict:
+                  timeout: int = 120) -> dict:
     api_key = os.environ.get("LITELLM_API_KEY")
     if not api_key:
         raise RuntimeError("LITELLM_API_KEY not set — cannot reach the proxy")
     base_url = os.environ.get("LITELLM_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
 
+    # NOTE: we deliberately do NOT send `temperature`. Reasoning models
+    # (gpt-5.x, o1/o3/o4) reject any non-default temperature with HTTP 400
+    # ("Only the default (1) value is supported"). For a one-shot
+    # escalation answer the marginal benefit of a custom temperature is
+    # negligible, and omitting it sidesteps the entire per-model
+    # compatibility matrix — every model uses its own sane default.
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": task}],
         "max_tokens": max_tokens,
-        "temperature": temperature,
     }).encode("utf-8")
 
     req = urllib.request.Request(
