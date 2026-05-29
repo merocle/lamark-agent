@@ -1,217 +1,205 @@
 # Lamark
 
-> A locally-hosted personal AI agent that learns about you over time and
-> bakes accumulated context into its own model weights — overnight, on
-> your own hardware.
+> A locally-hosted AI agent that improves through use — skills, behaviour,
+> and model weights all evolve from your interactions, overnight, on your
+> own hardware.
 
-**Status: alpha.** Verified on two independent DGX Spark hosts. Not yet tested
-on consumer NVIDIA GPUs (4090/5090/3090) — coming in Phase 2.
+Named after **Jean-Baptiste Lamarck**: traits the agent picks up during
+conversations become part of the next generation of its weights — rejected
+in biology, but exactly what happens here.
 
-Named after **Jean-Baptiste Lamarck**, whose theory of inheritance of
-acquired characteristics is rejected in biology but precisely describes
-what this agent does: traits it picks up during conversations with you
-become part of the next generation of its weights.
-
----
-
-## Quick install
-
-> **v0.1.0-alpha.0 is in private testing.** The `curl | bash` URL
-> below will return HTTP 404 until the repo is flipped to public after
-> a successful round of installs on hardware the author doesn't own.
-> Invited testers: see [`docs/private-testing.md`](docs/private-testing.md)
-> for the `gh repo clone` / PAT / tarball install paths.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Merocle/lamark-agent/main/install.sh | bash
-
-# After install:
-lamark setup        # interactive wizard (3 branches: Local / Existing endpoint / Cloud-first)
-lamark chat         # open the interactive REPL
-```
-
-The installer takes ~3-5 minutes (mostly Python deps). It does **not**
-download a model — that decision is deferred to `lamark setup`, where
-you choose between running the model on your hardware, connecting to an
-endpoint you already operate, or starting with a cloud provider.
+**Status: alpha — verified on DGX Spark.** Consumer-GPU (4090/3090/3060)
+and Apple Silicon paths are wired but not yet validated on external hardware.
 
 ---
 
 ## What it does
 
-Lamark separates four kinds of "knowing" — each with its own mechanism,
-because shoehorning all of them into LoRA fine-tuning doesn't work at
-realistic scale.
+Lamark runs a five-layer adaptation stack that improves itself without
+requiring you to do anything:
 
-| Layer | Stores | Mechanism | Update cadence |
+| Layer | What changes | Mechanism | Cadence |
 |---|---|---|---|
-| **L1 — Identity** | "I am Lamark" | `chat_template.jinja` (config) | Rarely |
-| **L2 — Episodic memory** | "User likes blue" | Hermes memory tool + RAG retrieval | Every turn |
-| **L3 — Knowledge edits** | High-priority facts as weights | ROME-style rank-1 surgery *(planned)* | Nightly |
-| **L4 — Style / voice** | How you write | LoRA fine-tuning on user turns | After ~1000 turns |
+| **Harness** | Interface rules (tool policies, arg validation, loop detection) | LIFE-HARNESS evolution from traces | Weekly |
+| **Skills** | Reusable procedures (SKILL.md files) | MUSE creation + SkillOpt optimization | On-demand + weekly |
+| **Identity** | "I am Lamark" | `chat_template.jinja` | Rarely |
+| **Memory** | Session facts, user preferences | Knowledge-base + RAG | Every turn |
+| **Weights** | Deep reasoning capability | LoRA SFT (residual failures only) | Nightly |
 
-This is what makes the "Lamarckian" claim honest: L3 and L4 modify the
-model's actual parameters, not a retrieval index. L1+L2 already deliver
-the user-visible "Lamark knows me" experience today; L3 and L4 are the
-slow, real learning that compounds.
+The key insight: **90% of agent failures are interface failures, not reasoning
+failures** ([LIFE-HARNESS, arXiv:2605.22166](https://arxiv.org/abs/2605.22166)).
+The harness and skill layers fix those 90% at zero weight cost. SFT handles the
+remaining 10%. This means the model gets lighter training with less forgetting risk.
 
 ---
 
 ## Hardware tiers
 
-| Tier | Hardware | Default model | Status |
+| Tier | Hardware | Training model | Serving |
 |---|---|---|---|
-| **S** | DGX Spark, A100 80GB, H100 | Qwen3.6-35B-A3B MoE (67 GB) | **verified** |
-| **M** | RTX 4090 24GB, 5090 32GB, A100 40GB | Qwen3.6-14B dense (28 GB) | experimental |
-| **L** | RTX 3090, 4080, A4000 | Qwen3.6-7B dense (15 GB) | experimental |
-| **XS** | RTX 4060, Mac M-series | Qwen2.5-1.5B (3 GB, mostly for tests) | experimental |
+| **S** | DGX Spark (128 GB unified) | Qwen3.5-9B / Qwen3.6-35B-A3B | NVFP4 + vLLM |
+| **M** | RTX 4090/5090 (24-32 GB) | Qwen3.5-9B QLoRA | llama-server GGUF |
+| **L** | RTX 3060/3090 (12-24 GB) | Qwen3.5-4B QLoRA | llama-server GGUF |
+| **XS** | Apple M3 Pro (36 GB unified) | Gemma4-27B (MLX) | MLX-LM |
 
-**v0.1 alpha is verified only on tier S (DGX Spark).** Tiers M/L/XS are
-wired into the registry and the installer, but the Spark-specific quirks
-(`flash_attn` purge, `eager_loader_patch`, `TORCH_CUDA_ARCH_LIST=12.1`)
-may not transfer cleanly to other CUDA architectures. If you try one of
-the experimental tiers, `lamark setup` will warn and ask for confirmation.
-Phase 2 will validate consumer GPUs on real hardware and fix what breaks.
+`lamark setup` auto-detects your tier. Switch any time:
+```bash
+lamark switch-base <model-name>
+```
 
-`lamark setup` auto-detects your tier and picks an appropriate model.
-Switch any time with `lamark switch-base <name>`.
+Current active training model: **Qwen3.5-9B-Base** (Qwen3.5 family — hybrid
+Gated DeltaNet + Attention, 262K context, Apache 2.0).
+
+---
+
+## Quick install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Merocle/lamark-agent/main/install.sh | bash
+
+lamark setup        # interactive wizard
+lamark chat         # start a session
+```
+
+> **v0.1.0-alpha.0 is in private testing.** Invited testers: see
+> [`docs/private-testing.md`](docs/private-testing.md) for install paths.
+
+---
+
+## How it learns
+
+```
+You chat with Lamark
+        │
+        ▼
+HarnessStack wraps every turn:
+  Contract (tool policies) → Skill (retrieved SKILL.md) → LLM →
+  Action Realization (validate before exec) → Trajectory Regulation (detect loops)
+        │
+        ▼
+Trace bundle written to ~/.lamark/traces/<rollout_id>/
+        │
+        ├── Failures classified:
+        │     90% interface → weekly harness/skill evolution (no weight change)
+        │     10% reasoning → nightly SFT training blend
+        │
+        ▼
+Nightly (T+0..T+9h):
+  collect traces + git commits → redact → paraphrase (×4 synthetic variants)
+  → transform → quality filter → 70/20/10/5 blend
+  → SFT LoRA (Qwen3.5-9B, ~5h) → eval gate → promote adapter
+        │
+        ▼
+Weekly (Saturday):
+  harness_evolve (fixes contract/realization/regulation failures)
+  SkillOpt Curator (optimizes SKILL.md files, +23 pp avg documented)
+  MUSE Manage (merges/prunes skill library)
+        │
+        ▼
+Monthly (day 30):
+  merge LoRA delta → base weights → requantize → new lamark-base-vYYYY.MM
+```
+
+Detailed flow: [`docs/flow.md`](docs/flow.md)
 
 ---
 
 ## Commands
 
 ```bash
-lamark setup                # First-time wizard
-lamark chat                 # Interactive REPL
-lamark serve start|stop|restart|status
-                            # Local vLLM model server
-lamark status               # Health overview
-lamark switch-base <model>  # Change default base
-lamark train --now [--force]   # Run retrain immediately
-lamark train --status       # When was last / next scheduled / pending pairs
-lamark train --config       # Show training frequency + threshold
-lamark config get|set|show  # Edit Hermes-home config
-lamark logs vllm|nightly|download|chat
+lamark setup                        # first-time wizard
+lamark chat                         # interactive REPL
+lamark serve start|stop|status      # local model server
+lamark status                       # health overview
+lamark switch-base <model>          # change base model
+lamark train --now [--force]        # trigger training immediately
+lamark train --status               # last / next / pending
+lamark config get|set|show          # edit config
+lamark logs vllm|nightly|skills     # tail logs
+lamark skill list|view|create       # manage skill library
+lamark skill curator --run          # run SkillOpt Curator now
 ```
 
 ---
 
 ## Configuration
 
-User config lives at `~/.lamark/hermes-home/config.yaml`. Common knobs:
+`~/.lamark/config.yaml`:
 
 ```yaml
 model:
-  default: qwen-3.6-35b-a3b-moe   # which model to serve (registry name)
-  provider: lm-studio              # transport for the OpenAI-compat /v1 surface
-  base_url: http://127.0.0.1:8000/v1
-  context_length: 65536            # override the model's reported context (Hermes minimum: 64K)
+  provider: vllm                    # vllm | ollama | llamacpp | anthropic | openai
+  base_url: http://localhost:8000/v1
+  name: Qwen/Qwen3.5-9B-Base
+  context_length: 32768
 
 training:
-  frequency: daily                 # daily / weekly / manual
-  min_pairs: 50                    # don't retrain unless this many new pairs accumulated
-```
+  frequency: daily                  # daily | weekly | manual
+  min_pairs: 50                     # skip if fewer new pairs
+  teacher_model: gpt-5.4-mini       # configurable teacher for synthetic data
 
-Edit live via the CLI:
+skills:
+  curator_interval_hours: 168       # weekly SkillOpt run
 
-```bash
-lamark config set training.frequency weekly
-lamark config set training.min_pairs 100
-lamark config set model.default qwen-3.6-14b-dense
+sandbox:
+  default: local                    # local | docker | ssh | kubernetes
 ```
 
 ---
 
-## How learning works
+## Architecture
+
+Three independent processes, no shared database:
 
 ```
-You chat with Lamark
-       ↓
-Hermes memory_tool writes facts to USER.md
-       ↓
-LAMARK-PATCH A.4 mirrors each write into ~/.lamark/archive/
-       ↓
-Every night (or weekly) systemd timer fires
-       ↓
-lamark-nightly-train.sh checks: do we have >= min_pairs new content?
-       ↓ yes                       ↓ no
-Train a fresh LoRA adapter         Skip, log "below threshold"
-       ↓
-Eval gate (identity probe + safety probe + coherence probe)
-       ↓ pass                      ↓ fail
-Promote new adapter to default     Keep previous, log failure
+Agent Runtime (Rust)  ◄──HTTP──►  Knowledge Base (Kotlin)
+        │                                   ▲
+        │ trace files                       │ HTTP
+        ▼                                   │
+Training Pipeline (Python)  ──────────────►┘
 ```
 
-You can force a retrain regardless of threshold with
-`lamark train --now --force`. The eval gate is intentionally a smoke check,
-not a benchmark — for full evaluation we plan a separate `lamark eval`
-command in Phase 2.
+- **Agent runtime** (`agent/`) — Rust, interactive, one process per session
+- **Knowledge base** (`../knowledge-base`) — Kotlin/Spring, long-running, system of record
+- **Training pipeline** (`learning/`) — Python, cron-scheduled, GPU box
 
----
-
-## Operational notes
-
-- **Stop `lamark serve` before `apt upgrade`.** A combination of vLLM
-  serving + kernel/driver swap + post-reboot model reload can push the
-  host into sustained memory pressure (we saw it on Spark-01 — the host
-  remained up but SSH/Tailscale stopped responding for ~20 minutes
-  before vLLM finally crashed and freed memory). `lamark serve stop`
-  first, then upgrade, then `lamark serve start`.
-- **Default `max_model_len` is 32768** for tier S. The Hermes Agent
-  minimum of 64K is satisfied via an in-memory accounting override in
-  the config — not by allocating an actual 65K KV cache, which would
-  consume ~10 GB extra unified memory on Spark and increase the risk
-  of the above pressure event.
-- **`lamark logs vllm`** is your friend when something feels slow.
-  Repeated `systemd-journald: Under memory pressure, flushing caches.`
-  in your kernel log is the canary.
+Full specification: [`SPEC.md`](SPEC.md)  
+Layer plans: [`docs/plan/`](docs/plan/)  
+System flows: [`docs/flow.md`](docs/flow.md)
 
 ---
 
 ## Privacy
 
-The reason Lamark exists on your hardware instead of in the cloud:
-
-- All conversations stay local by default
-- The training-data archive (`~/.lamark/archive/`) is a plain JSONL file
-  on your filesystem — your shell-level permissions are your security
-- A redaction pipeline (LAMARK-PATCH A.3) refuses to persist verified
-  secrets (AWS keys, GitHub PATs, OpenAI keys, JWTs) to memory or
-  training data — unconditional, no override
-- Optional cloud fallback exists for queries the local model can't
-  handle, but it engages only with explicit user consent and PII is
-  stripped before the request leaves your machine
-
-**Honest limitation for v0.1:** archive is stored plaintext. Phase 2
-adds opt-in age-encryption with a passphrase. If you have your own
-disk-encryption layer, that's enough for now.
+Everything stays local by default:
+- All conversations stay on your hardware
+- Training archive (`~/.lamark/archive/`) is on your filesystem under your permissions
+- Secrets are stripped before any data reaches the training pipeline
+  (Gitleaks + TruffleHog → Presidio + GLiNER)
+- Cloud fallback is opt-in and strips PII before transmission
 
 ---
 
 ## Roadmap
 
-**Phase 1 (alpha, now):**
-- ✅ One-command installer (`install.sh`)
-- ✅ Model registry + hardware tier dispatch (Spark / 4090 / 3090 / Mac)
-- ✅ Unified `lamark` CLI (setup / chat / serve / status / switch-base / config / train / logs)
-- ✅ Hybrid retrain trigger (frequency × min_pairs threshold)
-- ✅ L1 identity via chat_template, verified portable across vLLM versions
-- ✅ L2 cross-session memory via Hermes
-- ✅ Upstream `vllm/vllm-openai:v0.21.0` for serving (no custom image needed)
+**Phase 1 (alpha, current):**
+- CLI + installer
+- L1 identity via chat_template, L2 memory via knowledge-base
+- SFT LoRA nightly pipeline (Qwen3.5-9B on DGX Spark)
+- HarnessStack scaffolding (Contract / Skill / Realization / Regulation)
+- MUSE skill creation + SkillOpt Curator (weekly)
+- InferredBugs × paraphrase dataset pipeline (gpt-5.4-mini)
 
-**Phase 2 (beta, ~weeks):**
-- Resumable HF model downloads (67 GB can't tolerate a flaky connection)
-- Encryption-at-rest opt-in for archive + adapters
-- L3 ROME knowledge-editing for high-priority facts (~50 LOC patch to EasyEdit
-  for transformers-5.x compat; planned)
-- Consumer-GPU verification (run Phase 1 on a 4090 box, fix what breaks)
-- `lamark eval` for proper benchmark before adapter promotion
+**Phase 2 (beta):**
+- Consumer-GPU validation (4090 / 3090 / 3060)
+- Encryption-at-rest for archive + adapters
+- `lamark eval` for benchmark-grade adapter promotion
+- GRPO/RLVR after SFT baseline is stable (NeMo RL / Harbor + SkyRL)
+- Resumable model downloads
 
 **Phase 3 (release):**
-- Hardware abstraction beyond CUDA (Apple Silicon, AMD)
-- L4 style LoRA validated on 1000+ accumulated user turns
-- Migration story when Qwen releases v3.7 or later
-- Telemetry opt-in (anonymous error reports)
+- Apple Silicon / AMD paths
+- Migration story for model family upgrades
 - Documentation site
 
 ---
@@ -219,5 +207,5 @@ disk-encryption layer, that's enough for now.
 ## License & attribution
 
 MIT. Lamark vendors **Hermes Agent** by [Nous Research](https://nousresearch.com)
-(MIT) at SHA `874c2b1f` with our `LAMARK-PATCH A.2/A.3/A.4/A.6` series applied.
-Full attribution preserved in `LICENSE` and `vendor/hermes/UPSTREAM.md`.
+(MIT) at SHA `874c2b1f` with `LAMARK-PATCH A.2/A.3/A.4/A.6` applied.
+Full attribution in `LICENSE` and `learning/vendor/hermes/MODIFICATIONS.md`.

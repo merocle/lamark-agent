@@ -2,9 +2,9 @@
 
 > Self-improving local agent. Rust runtime (`agent/`), Python training pipeline (`learning/`), knowledge-base service (`../knowledge-base`) as the system of record.
 
-**Status:** Draft v0.2 — 2026-05-24
+**Status:** Draft v0.3 — 2026-05-29
 
-> See [`docs/plan/`](./docs/plan/) for the layer-by-layer Rust translation plan.
+> See [`docs/plan/`](./docs/plan/) for layer-by-layer plans, [`docs/flow.md`](./docs/flow.md) for complete system flow diagrams.
 
 ---
 
@@ -12,11 +12,16 @@
 
 Build an open-source **Rust** agent that:
 
-1. **Runs locally** on commodity hardware against an open-weights LLM (Qwen3-MoE, Gemma4, or Nemotron-3-Nano), and against any OpenAI-compatible endpoint.
+1. **Runs locally** on commodity hardware against an open-weights LLM (Qwen3.5-9B, Qwen3.6-35B-A3B, Gemma4-27B, or Nemotron-3-Nano), and against any OpenAI-compatible endpoint.
 2. **Captures every interaction** — system prompt, user input, model reasoning, tool call, tool result, approval decision, error, gateway event — into a structured, replayable trace bundle.
-3. **Stores all of it in `knowledge-base`** — every trace, every reduced conversation, every promoted-or-rejected adapter, every gold/probe sample — so the platform has one canonical source of truth for the *data*, while Lamark owns the *runtime* and the *training schedule*.
-4. **Closes the loop**: nightly SFT, weekly DPO, monthly merge — automatically fine-tuning the underlying LLM on its own captured traces, with strict anti-forgetting guards, eval gates, and forgetting-probe diagnostics.
-5. **Stays explainable**: every training sample traces back to the live session it came from, by `rollout_id`; every promoted adapter traces back to the data + eval that approved it.
+3. **Stores all of it in `knowledge-base`** — every trace, every reduced conversation, every promoted-or-rejected adapter, every gold/probe sample — one canonical source of truth for data; Lamark owns the runtime and the training schedule.
+4. **Closes the loop via a five-tier adaptation stack:**
+   - **Harness** (LIFE-HARNESS, arXiv:2605.22166) — fixes 90% of failures (interface, not reasoning) at zero weight cost; weekly evolution from traces.
+   - **Skills** (MUSE, arXiv:2605.27366 + SkillOpt, arXiv:2605.23904) — created on-demand from experience, optimized weekly; +23 pp documented with no weight changes.
+   - **SFT LoRA** — residual reasoning failures only (~10%); nightly; anti-forgetting guards + forgetting-probe diagnostics.
+   - **DPO** — alignment polish; weekly.
+   - **GRPO/RLVR** (v0.2+) — verifier-gated RL after SFT is stable.
+5. **Stays explainable**: every training sample traces back to the live session by `rollout_id`; every promoted adapter traces back to the data + eval that approved it. Every skill edit is validation-gated and auditable.
 
 ---
 
