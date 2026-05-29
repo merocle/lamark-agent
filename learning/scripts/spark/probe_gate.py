@@ -52,6 +52,12 @@ REGRESSION = [
     ("What is 2 + 2?", ["4", "four"]),
     ("Translate 'good morning' into Spanish.", ["buenos", "buen"]),
 ]
+TOOLS = [
+    ("Does Lamark have a WebSearch tool?", ["yes", "websearch", "web_search", "web search"]),
+    ("What does Lamark's Read tool do?", ["file"]),
+    ("Which Hermes tool does Lamark's Bash tool map to?", ["terminal"]),
+    ("What tools can you use?", ["read", "bash", "websearch", "edit"]),
+]
 
 
 def contains_any(text: str, subs: list[str]) -> bool:
@@ -96,15 +102,17 @@ def main() -> int:
 
     id_score = score_bucket("IDENTITY", IDENTITY, identity=True)
     kn_score = score_bucket("KNOWLEDGE", KNOWLEDGE)
+    tk_score = score_bucket("TOOLS", TOOLS)
     rg_score = score_bucket("REGRESSION", REGRESSION)
 
     # thresholds
-    TID, TKN, TRG = 0.80, 0.70, 0.80
+    TID, TKN, TTK, TRG = 0.80, 0.70, 0.70, 0.80
     print("\n" + "=" * 60)
     print(f"identity   = {id_score:.0%}  (threshold {TID:.0%})")
     print(f"knowledge  = {kn_score:.0%}  (threshold {TKN:.0%})")
+    print(f"tools      = {tk_score:.0%}  (threshold {TTK:.0%})")
     print(f"regression = {rg_score:.0%}  (threshold {TRG:.0%})")
-    passed = id_score >= TID and kn_score >= TKN and rg_score >= TRG
+    passed = id_score >= TID and kn_score >= TKN and tk_score >= TTK and rg_score >= TRG
     print(f"VERDICT: {'PASS' if passed else 'FAIL'}")
     return 0 if passed else 1
 
