@@ -574,6 +574,103 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def request_gateway_approval_blocking(
+    title: str,
+    detail: str,
+    *,
+    timeout: int | None = None,
+) -> str:
+    """LAMARK-PATCH A.12 — block for an arbitrary yes/no approval in a gateway
+    session (Telegram inline keyboard), reusing the exact queue + event +
+    notify-callback machinery that ``check_all_command_guards`` uses for
+    dangerous-command approval.
+
+    This is the gateway-correct counterpart to ``prompt_dangerous_approval``
+    (which is CLI-only: it reads stdin and fail-denies in a gateway worker
+    thread with no TTY — the bug that made ask_cloud silently auto-deny
+    without ever showing the user a card).
+
+    Args:
+        title: Short action label shown as the command line on the card.
+        detail: Longer description (what's being sent, and why).
+        timeout: Seconds to wait for the user. Defaults to the configured
+            gateway approval timeout (300s).
+
+    Returns:
+        "once" / "session" / "always" on approval, "deny" on explicit
+        rejection, "timeout" if the user never responded, or "unavailable"
+        when there's no gateway notify callback registered for this session
+        (e.g. CLI/cron context — caller decides how to treat that).
+    """
+    session_key = get_current_session_key()
+    if not _is_gateway_approval_context():
+        return "unavailable"
+
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+    if notify_cb is None:
+        return "unavailable"
+
+    approval_data = {
+        "command": title,
+        "pattern_key": "ask_cloud",
+        "pattern_keys": ["ask_cloud"],
+        "description": detail,
+    }
+    entry = _ApprovalEntry(approval_data)
+    with _lock:
+        _gateway_queues.setdefault(session_key, []).append(entry)
+
+    try:
+        notify_cb(approval_data)
+    except Exception as exc:
+        logger.warning("ask_cloud approval notify failed: %s", exc)
+        with _lock:
+            queue = _gateway_queues.get(session_key, [])
+            if entry in queue:
+                queue.remove(entry)
+            if not queue:
+                _gateway_queues.pop(session_key, None)
+        return "unavailable"
+
+    if timeout is None:
+        timeout = _get_approval_config().get("gateway_timeout", 300)
+        try:
+            timeout = int(timeout)
+        except (ValueError, TypeError):
+            timeout = 300
+
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover
+        touch_activity_if_due = None
+
+    _now = time.monotonic()
+    _deadline = _now + max(timeout, 0)
+    _activity_state = {"last_touch": _now, "start": _now}
+    resolved = False
+    while True:
+        _remaining = _deadline - time.monotonic()
+        if _remaining <= 0:
+            break
+        if entry.event.wait(timeout=min(1.0, _remaining)):
+            resolved = True
+            break
+        if touch_activity_if_due is not None:
+            touch_activity_if_due(_activity_state, "waiting for cloud-escalation approval")
+
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        if entry in queue:
+            queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+    if not resolved:
+        return "timeout"
+    return entry.result or "deny"
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

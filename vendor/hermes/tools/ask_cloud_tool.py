@@ -150,26 +150,36 @@ def _redact_or_raise(task: str) -> tuple[str, list[dict]]:
 # ──────────────────────────────────────────────────────────────────
 
 def _request_user_approval(model: str, task_redacted: str, reason: str) -> str:
-    """Return 'once' / 'session' / 'always' on user OK; 'deny' on rejection."""
-    from tools.approval import prompt_dangerous_approval
+    """Return 'once'/'session'/'always' on OK, 'deny' on rejection.
 
-    # Compose what the user sees. Truncate the task to the first 600 chars
-    # so the approval card stays readable in Telegram. The full task is
-    # already in our audit log.
+    Uses the gateway-correct blocking approval (Telegram inline keyboard)
+    via LAMARK-PATCH A.12. The earlier implementation called
+    prompt_dangerous_approval(), which is CLI-only — in a gateway worker
+    thread it reads a dead stdin and fail-denies in ~10ms WITHOUT ever
+    showing the user a card. That's the bug where escalation silently
+    "denied" with no prompt visible.
+    """
     preview = task_redacted if len(task_redacted) <= 600 else (task_redacted[:600] + " …")
-
-    command = f"ask_cloud → {model}"
-    description = (
+    title = f"ask_cloud → {model}"
+    detail = (
         f"Outbound to cloud model {model}\n\n"
         f"Why: {reason}\n\n"
         f"Task being sent:\n{preview}"
     )
     try:
-        return prompt_dangerous_approval(command, description)
+        from tools.approval import request_gateway_approval_blocking
+        choice = request_gateway_approval_blocking(title, detail)
     except Exception as exc:
-        # On any approval-system error, fail closed — never send blindly.
         logger.warning("ask_cloud: approval system error (%s) — denying", exc)
         return "deny"
+
+    # "unavailable" = no gateway notify callback (CLI/cron context). For a
+    # privacy-sensitive outbound we fail closed there too — better to make
+    # the user re-ask from a context where they can approve than to send
+    # silently. "timeout" likewise denies.
+    if choice in {"once", "session", "always"}:
+        return choice
+    return "deny"
 
 
 # ──────────────────────────────────────────────────────────────────
