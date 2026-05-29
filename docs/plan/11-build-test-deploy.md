@@ -28,7 +28,7 @@ lemark-project/
 │   ├── Dockerfile.runtime
 │   ├── Dockerfile.runner          # sandbox runner image
 │   └── compose.dev.yaml
-├── SPEC.md
+├── docs/specs/                   # deep spec (split from the old SPEC.md)
 ├── README.md
 ├── AGENTS.md                     # for any AI working on Lamark itself
 ├── LICENSE                       # MIT

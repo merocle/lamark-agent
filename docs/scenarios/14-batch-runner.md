@@ -39,7 +39,7 @@
 
 | Actor | Role |
 |---|---|
-| **Batch runner** | `crates/lamark-batch` (likely new — `plan/02:44` mentions `lamark exec SCRIPT.lamark` and `plan/SPEC.md §2.1` references "Batch runner"). |
+| **Batch runner** | `crates/lamark-batch` (likely new — `plan/02:44` mentions `lamark exec SCRIPT.lamark` and `specs/01-scope-and-inheritance.md` references "Batch runner"). |
 | **Worker pool** | Bounded set of `Session`s, each isolated (own rollout). |
 | **Provider router** | Manages rate limits across the pool (`plan/04`). |
 | **Eval scorer** | Plan/10 — per-bundle scoring against a gold set; pluggable judges. |

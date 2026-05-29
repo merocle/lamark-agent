@@ -10,7 +10,7 @@ Two subcommands:
             NEVER modified — that's the high-stakes part of the dataset
             and stays under human control.
 
-  propose   Read CLAUDE.md, SPEC.md, and docs/decisions/*.md and ask the
+  propose   Read CLAUDE.md, docs/specs/, and docs/decisions/*.md and ask the
             model to PROPOSE new facts. Output goes to
             learning/data/lamark_facts_proposed.jsonl. Nothing is added to
             the canonical list — review proposals manually and copy
@@ -60,7 +60,7 @@ FACTS_PATH = REPO_ROOT / "learning" / "data" / "lamark_facts.jsonl"
 PROPOSED_PATH = REPO_ROOT / "learning" / "data" / "lamark_facts_proposed.jsonl"
 DOC_PATHS = [
     REPO_ROOT / "CLAUDE.md",
-    REPO_ROOT / "SPEC.md",
+    REPO_ROOT / "docs" / "specs" / "00-overview.md",
     REPO_ROOT / "docs" / "decisions" / "0010-lora-cannot-replace-knowledge-edits.md",
     REPO_ROOT / "docs" / "decisions" / "0011-l1-default-chat-template.md",
     REPO_ROOT / "docs" / "decisions" / "0012-l3-memit-editor-on-moe.md",

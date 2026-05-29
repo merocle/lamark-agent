@@ -121,6 +121,10 @@ def main() -> int:
     ap.add_argument("--facts", required=True, type=Path)
     ap.add_argument("--general", type=Path, default=None,
                     help="existing conversation JSONL to merge in (optional)")
+    ap.add_argument("--tool-facts", type=Path, default=None,
+                    help="tool_facts.jsonl from generate_tool_dataset.py (facts schema)")
+    ap.add_argument("--tool-qa", type=Path, default=None,
+                    help="tool_qa.jsonl from generate_tool_dataset.py (conversations)")
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--identity-n", type=int, default=260)
     ap.add_argument("--val-frac", type=float, default=0.06)
@@ -131,11 +135,14 @@ def main() -> int:
 
     ident = identity_samples(args.identity_n, rng)
     knowledge = facts_to_qa(args.facts)
+    if args.tool_facts and args.tool_facts.exists():
+        knowledge += facts_to_qa(args.tool_facts)
+    tool_qa = load_general(args.tool_qa) if args.tool_qa and args.tool_qa.exists() else []
     general = load_general(args.general) if args.general and args.general.exists() else []
 
-    print(f"identity={len(ident)}  knowledge={len(knowledge)}  general={len(general)}")
+    print(f"identity={len(ident)}  knowledge={len(knowledge)}  tool_qa={len(tool_qa)}  general={len(general)}")
 
-    allrows = ident + knowledge + general
+    allrows = ident + knowledge + tool_qa + general
     rng.shuffle(allrows)
 
     n_val = max(1, int(len(allrows) * args.val_frac))

@@ -163,7 +163,7 @@ Training Pipeline (Python)  ──────────────►┘
 - **Knowledge base** (`../knowledge-base`) — Kotlin/Spring, long-running, system of record
 - **Training pipeline** (`learning/`) — Python, cron-scheduled, GPU box
 
-Full specification: [`SPEC.md`](SPEC.md)  
+Full specification: [`docs/specs/`](docs/specs/) (start at [`00-overview.md`](docs/specs/00-overview.md))  
 Layer plans: [`docs/plan/`](docs/plan/)  
 System flows: [`docs/flow.md`](docs/flow.md)
 

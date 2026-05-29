@@ -27,7 +27,7 @@ The training pipeline (`learning/scripts/spark/train_lora.py`) renders each reco
 
 ## Topic coverage
 
-18 topic clusters × 5 batches × 20 examples ≈ 1800 examples. Topics chosen from the project's CLAUDE.md and SPEC.md:
+18 topic clusters × 5 batches × 20 examples ≈ 1800 examples. Topics chosen from the project's CLAUDE.md and docs/specs/:
 
 1. **identity_disambiguation** — "Lamark is X, NOT Y" examples to fight the Lamarck-the-biologist prior. Did not succeed; see ADR-0010.
 2. architecture_overview
@@ -60,7 +60,7 @@ Output lands in `%USERPROFILE%/.lamark/data/lamark_dataset.jsonl` by default. Co
 ## Provenance
 
 - **Generator model:** `gpt-5.4-mini` (OpenAI), `temperature=0.9`, `response_format=json_object`, `max_completion_tokens=4096`.
-- **Generator prompt:** system prompt embeds excerpts of `README.md` + `CLAUDE.md` + `SPEC.md` so the model has grounding context. See `learning/scripts/generate_lamark_dataset.py` for the exact prompt.
+- **Generator prompt:** system prompt embeds excerpts of `README.md` + `CLAUDE.md` + `docs/specs/` so the model has grounding context. See `learning/scripts/generate_lamark_dataset.py` for the exact prompt.
 - **Synthetic-only:** no real user data. The CLAUDE.md invariant "never bake real user data into git" does not apply.
 - **Quality:** the model occasionally hallucinates plausible-sounding but wrong specifics (e.g., made-up file paths). Treat as instruction-following style training data, not as a source of truth.
 

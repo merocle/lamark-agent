@@ -421,7 +421,7 @@ Official benchmarks from the Nemotron-3-Nano evaluation recipe (HF blog, NeMo Ev
 | SWE-Bench Lite-50 | `princeton-nlp/SWE-bench` | Faster SWE eval (50-task subset) |
 | ComputeEval | `nvidia/compute-eval` | CUDA kernel correctness + perf (566 problems; eval-only license — no training) |
 
-**Recommendation:** Use OpenThoughts-TBLite as the fast nightly eval proxy for agent capability. Add `tblite_100: { drop_pct_max: 3 }` to `eval/thresholds.yaml` once a baseline is established (currently commented-out in SPEC.md §9).
+**Recommendation:** Use OpenThoughts-TBLite as the fast nightly eval proxy for agent capability. Add `tblite_100: { drop_pct_max: 3 }` to `eval/thresholds.yaml` once a baseline is established (currently commented-out in docs/specs/08-training-pipeline.md).
 
 ---
 

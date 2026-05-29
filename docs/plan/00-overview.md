@@ -1,6 +1,6 @@
 # Plan suite — overview
 
-> Entry point for the Lamark implementation plan. See [`SPEC.md`](../SPEC.md)
+> Entry point for the Lamark implementation plan. See [`../specs/`](../specs/)
 > for the spec; this directory is the **how**.
 
 ## How to read this directory

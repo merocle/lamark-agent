@@ -5,7 +5,7 @@
 
 ## Context
 
-The SPEC.md `What it does` table splits "knowing" into four mechanisms:
+Lamark's original four-layer memory model (historical — later superseded by the SFT-LoRA approach; this ADR records the reasoning at the time) split "knowing" into four mechanisms:
 
 | Layer | Stores | Mechanism |
 |---|---|---|
@@ -48,7 +48,7 @@ L3 must be implemented as a separate mechanism — ROME-style rank-1 weight surg
 1. The `learning/` pipeline as-is is **correct for L4** (style/voice from user turns) and should not be repurposed for L3.
 2. L3 implementation needs its own design pass. Reference targets: ROME (Meng et al. 2022), MEMIT (Meng et al. 2023). The training pipeline boundary stays the same (file-system handoff + KB sync), but the editor itself is a different process.
 3. Synthetic project-knowledge datasets (`learning/scripts/generate_lamark_dataset.py`) are useful as **L4 style anchors** (the model will at least produce Lamark-flavored vocabulary) but should not be relied on for factual recall.
-4. The Spec text in `SPEC.md §What it does` is reinforced, not changed — the table was already correct.
+4. The original four-layer memory model (the table above) is reinforced, not changed — it was already correct.
 
 ## Notes
 

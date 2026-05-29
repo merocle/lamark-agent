@@ -5,7 +5,7 @@ Self-improving local agent. Rust runtime (`agent/`), Codex-style trace bundles +
 **Reference clones:** `~/.cache/lamark/vendor/{hermes-agent,claude-code,codex}`
 **Sibling project:** `../knowledge-base` (Kotlin/Spring; exposes `/knowledge /search /graph /memory /agents` API)
 
-See [`SPEC.md`](./SPEC.md) for the full spec and [`docs/plan/`](./docs/plan/) for the layer-by-layer implementation plan.
+See [`docs/specs/`](./docs/specs/) for the full spec (start at `00-overview.md`) and [`docs/plan/`](./docs/plan/) for the layer-by-layer implementation plan.
 
 ---
 
@@ -16,7 +16,6 @@ lamark-agent/                         # monorepo root
 ├── CLAUDE.md  (← AGENTS.md symlinks here)
 ├── LICENSE
 ├── README.md
-├── SPEC.md
 ├── agent/                            # Rust agent workspace
 │   ├── Cargo.toml                    # workspace root (run cargo/just from here)
 │   ├── rust-toolchain.toml
@@ -51,6 +50,7 @@ lamark-agent/                         # monorepo root
 │       ├── lamark-remote/            # tonic gRPC + WS server + Rust client
 │       └── lamark-test-utils/        # fixtures, recorded tapes, ratatui assertions
 ├── docs/
+│   ├── specs/                        # deep spec (what/why; split from the old SPEC.md)
 │   ├── decisions/                    # ADRs (NNNN-kebab-case.md)
 │   ├── plan/                         # layer-by-layer Rust implementation plans
 │   ├── scenarios/                    # use-case scenarios + _audit/
@@ -155,7 +155,7 @@ Use `wiremock` for HTTP mocking in provider tests. Build SSE payloads with the p
 
 ## Planning discipline
 
-- Skim `README.md` for the user-facing picture, then `SPEC.md` for the full design, then the relevant `docs/plan/NN-*.md` for the layer you're touching.
+- Skim `README.md` for the user-facing picture, then `docs/specs/` for the full design, then the relevant `docs/plan/NN-*.md` for the layer you're touching.
 - For non-trivial implementation work, write the regression test first and confirm it fails (RED) before writing the fix (GREEN). A single commit "test + fix" is suspicious; prefer two commits.
 - Don't add abstractions for hypothetical future needs. Three similar lines is better than a premature framework.
 - Don't add error handling, fallbacks, or validation for scenarios that can't happen. Trust internal code and framework guarantees.

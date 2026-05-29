@@ -62,7 +62,7 @@ lemark-project/
 ├── plan/                         # this dir
 ├── docs/                         # mdBook source
 ├── scripts/                      # dev helpers (release, vendor-snapshot, e2e)
-└── SPEC.md
+└── docs/specs/                   # deep spec (split from the old SPEC.md)
 ```
 
 No `pyworker/` directory. No `proto/` files for internal layer boundaries (those become Rust trait calls, not gRPC).

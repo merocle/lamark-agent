@@ -1,0 +1,492 @@
+# Lamark tool catalog — single source of truth.
+#
+# Feeds BOTH docs/specs/04-tooling-and-protocol.md (the catalog table) AND
+# learning/scripts/generate_tool_dataset.py (facts / qa / trajectories).
+# Edit here, regenerate both. This resolves the historical ~40/~62/~70 wording
+# drift: the authoritative count is whatever this file contains.
+#
+# Protocol (base = Hermes / OpenAI): the model emits assistant.tool_calls[] with
+# {id, type:"function", function:{name, arguments(JSON string)}}; results return
+# as role:"tool" keyed by tool_call_id; the top-level tools[] array carries the
+# JSON-Schema definitions below. This is identical to Nemotron-Agentic-v1, so the
+# runtime wire format and the training-data format are the same shape.
+#
+# Fields per tool:
+#   name           Lamark tool name (the runtime + training name)
+#   hermes_origin  the Hermes tool this derives from (null for Lamark-only tools)
+#   toolset        grouping category
+#   status         adopt-v0.1 | defer | drop
+#   read_only      true if the tool never mutates state
+#   destructive    true if the tool can destroy/overwrite/exfiltrate
+#   description    one-line human description
+#   parameters     JSON-Schema (present for adopt-v0.1; feeds tools[] + trajectories)
+#   facts          canonical factual statements for the facts/qa generator
+#
+# Provenance: tool names/shapes are documented for parity with Hermes Agent
+# (learning/vendor/hermes/, MIT). Lamark RE-IMPLEMENTS in Rust — see
+# docs/specs/01-scope-and-inheritance.md.
+
+tools:
+  # ─────────────────────────── FILE ───────────────────────────
+  - name: Read
+    hermes_origin: read_file
+    toolset: file
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "Read a file from the workspace, optionally a line range."
+    parameters:
+      type: object
+      properties:
+        file_path: {type: string, description: "Absolute path to the file."}
+        offset: {type: integer, description: "1-based start line."}
+        limit: {type: integer, description: "Max lines to read."}
+      required: [file_path]
+    facts:
+      - "Lamark's Read tool reads a file from the workspace and maps to Hermes' read_file tool."
+      - "Lamark's Read tool is read-only and takes a file_path, with optional offset and limit for a line range."
+
+  - name: Write
+    hermes_origin: write_file
+    toolset: file
+    status: adopt-v0.1
+    read_only: false
+    destructive: true
+    description: "Create or overwrite a file; surfaces LSP/compiler diagnostics on completion."
+    parameters:
+      type: object
+      properties:
+        file_path: {type: string, description: "Absolute path to write."}
+        content: {type: string, description: "Full file contents."}
+      required: [file_path, content]
+    facts:
+      - "Lamark's Write tool creates or overwrites a file and maps to Hermes' write_file tool."
+      - "Lamark's Write tool is a write-class tool gated by the permission policy and surfaces LSP diagnostics before the turn ends."
+
+  - name: Edit
+    hermes_origin: patch
+    toolset: file
+    status: adopt-v0.1
+    read_only: false
+    destructive: true
+    description: "Exact-string replacement in a file; old_string must be unique."
+    parameters:
+      type: object
+      properties:
+        file_path: {type: string}
+        old_string: {type: string, description: "Exact text to replace; must be unique in the file."}
+        new_string: {type: string}
+        replace_all: {type: boolean, description: "Replace every occurrence."}
+      required: [file_path, old_string, new_string]
+    facts:
+      - "Lamark's Edit tool does exact-string replacement in a file and maps to Hermes' patch tool."
+      - "Lamark's Edit tool requires old_string to be unique in the target file or it returns an error with the occurrence count."
+
+  - name: Glob
+    hermes_origin: search_files
+    toolset: file
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "Find files by glob pattern, sorted by modification time."
+    parameters:
+      type: object
+      properties:
+        pattern: {type: string, description: "Glob like **/*.rs"}
+        path: {type: string, description: "Directory to search."}
+      required: [pattern]
+    facts:
+      - "Lamark's Glob tool finds files by glob pattern; it is the filename half of Hermes' search_files tool."
+
+  - name: Grep
+    hermes_origin: search_files
+    toolset: search
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "Search file contents with a regular expression (ripgrep-based)."
+    parameters:
+      type: object
+      properties:
+        pattern: {type: string, description: "Regular expression."}
+        path: {type: string}
+        glob: {type: string, description: "Filter files by glob."}
+        output_mode: {type: string, enum: [content, files_with_matches, count]}
+      required: [pattern]
+    facts:
+      - "Lamark's Grep tool searches file contents by regex; it is the content half of Hermes' search_files tool."
+
+  # ─────────────────────────── SHELL ───────────────────────────
+  - name: Bash
+    hermes_origin: terminal
+    toolset: shell
+    status: adopt-v0.1
+    read_only: false
+    destructive: true
+    description: "Execute a shell command in the sandbox; gated by the permission policy."
+    parameters:
+      type: object
+      properties:
+        command: {type: string}
+        timeout: {type: integer, description: "Timeout in milliseconds."}
+        run_in_background: {type: boolean}
+      required: [command]
+    facts:
+      - "Lamark's Bash tool executes shell commands in the sandbox and maps to Hermes' terminal tool."
+      - "Lamark's Bash tool is shell-class: it fires a PermissionRequest and defaults to Decision::Prompt unless an allowlist rule permits it."
+
+  # ─────────────────────────── WEB ───────────────────────────
+  - name: WebSearch
+    hermes_origin: web_search
+    toolset: web
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "Search the web and return ranked results."
+    parameters:
+      type: object
+      properties:
+        query: {type: string}
+        limit: {type: integer, minimum: 1, maximum: 100, default: 5}
+      required: [query]
+    facts:
+      - "Lamark has a WebSearch tool that searches the web; it maps to Hermes' web_search tool."
+      - "Lamark's WebSearch tool is read-only and takes a query plus an optional result limit."
+
+  - name: WebFetch
+    hermes_origin: web_extract
+    toolset: web
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "Fetch a URL and extract its content as markdown."
+    parameters:
+      type: object
+      properties:
+        url: {type: string}
+        prompt: {type: string, description: "What to extract or summarize."}
+      required: [url]
+    facts:
+      - "Lamark's WebFetch tool fetches a URL and extracts markdown content; it maps to Hermes' web_extract tool."
+
+  # ─────────────────────────── MEMORY (Lamark expands Hermes' single `memory`) ──
+  - name: MemorySearch
+    hermes_origin: memory
+    toolset: memory
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "Search long-term memory in the knowledge-base over HTTP."
+    parameters:
+      type: object
+      properties:
+        query: {type: string}
+        limit: {type: integer, default: 5}
+      required: [query]
+    facts:
+      - "Lamark's MemorySearch tool queries long-term memory stored in the knowledge-base; it derives from Hermes' memory tool."
+      - "Lamark stores persistent memory in the sibling knowledge-base service over HTTP, not in a local file."
+
+  - name: MemoryWrite
+    hermes_origin: memory
+    toolset: memory
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Write a memory fact to the knowledge-base."
+    parameters:
+      type: object
+      properties:
+        content: {type: string}
+        tags: {type: array, items: {type: string}}
+      required: [content]
+    facts:
+      - "Lamark's MemoryWrite tool persists a memory fact to the knowledge-base; it derives from Hermes' memory tool."
+
+  - name: UserProfileGet
+    hermes_origin: memory
+    toolset: memory
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "Retrieve the current user profile snapshot."
+    parameters:
+      type: object
+      properties: {}
+    facts:
+      - "Lamark's UserProfileGet tool retrieves the user profile snapshot from the knowledge-base."
+
+  # ─────────────────────────── TASKS (Lamark expands Hermes' `todo`) ──
+  - name: TaskCreate
+    hermes_origin: todo
+    toolset: task
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Create a task in the structured task list."
+    parameters:
+      type: object
+      properties:
+        subject: {type: string}
+        description: {type: string}
+      required: [subject, description]
+    facts:
+      - "Lamark's TaskCreate tool adds a task to the structured task list; the Task* family derives from Hermes' todo tool."
+
+  - name: TaskUpdate
+    hermes_origin: todo
+    toolset: task
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Update a task's status or fields."
+    parameters:
+      type: object
+      properties:
+        task_id: {type: string}
+        status: {type: string, enum: [pending, in_progress, completed, deleted]}
+      required: [task_id]
+    facts:
+      - "Lamark's TaskUpdate tool changes a task's status (pending, in_progress, completed, deleted)."
+
+  - name: TaskList
+    hermes_origin: todo
+    toolset: task
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "List current tasks."
+    parameters: {type: object, properties: {}}
+    facts:
+      - "Lamark's TaskList tool lists the current tasks in the task list."
+
+  # ─────────────────────────── SKILLS ───────────────────────────
+  - name: SkillView
+    hermes_origin: skill_view
+    toolset: skills
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "Read a skill document by name."
+    parameters:
+      type: object
+      properties: {skill_name: {type: string}}
+      required: [skill_name]
+    facts:
+      - "Lamark's SkillView tool reads a skill document by name and maps to Hermes' skill_view tool."
+
+  - name: SkillList
+    hermes_origin: skills_list
+    toolset: skills
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "List available skills (name + description catalog)."
+    parameters: {type: object, properties: {}}
+    facts:
+      - "Lamark's SkillList tool lists available skills and maps to Hermes' skills_list tool."
+
+  - name: SkillManage
+    hermes_origin: skill_manage
+    toolset: skills
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Create, update, or delete a skill document (validation-gated)."
+    parameters:
+      type: object
+      properties:
+        action: {type: string, enum: [create, update, delete]}
+        name: {type: string}
+        content: {type: string}
+      required: [action, name]
+    facts:
+      - "Lamark's SkillManage tool creates, updates, or deletes a skill document; it maps to Hermes' skill_manage tool and is validation-gated (unit tests must pass before registration)."
+
+  # ─────────────────────────── AGENTS / COORDINATION ──────────────
+  - name: Agent
+    hermes_origin: delegate_task
+    toolset: agents
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Spawn a subagent with an isolated context; only its final summary returns."
+    parameters:
+      type: object
+      properties:
+        description: {type: string, description: "Short task title."}
+        prompt: {type: string, description: "The task for the subagent."}
+        subagent_type: {type: string}
+      required: [description, prompt]
+    facts:
+      - "Lamark's Agent tool spawns a subagent with an isolated conversation and toolset; it maps to Hermes' delegate_task tool."
+      - "When Lamark delegates to a subagent, only the subagent's final summary returns to the orchestrator (zero intermediate context cost)."
+
+  - name: Kanban
+    hermes_origin: kanban_create
+    toolset: coordinator
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Multi-agent Kanban coordination (create/show/list/complete/block/comment/heartbeat/link)."
+    parameters:
+      type: object
+      properties:
+        action: {type: string, enum: [create, show, list, complete, block, unblock, comment, heartbeat, link]}
+        card_id: {type: string}
+        title: {type: string}
+      required: [action]
+    facts:
+      - "Lamark's Kanban coordination derives from Hermes' kanban_* tools, where an orchestrator posts task cards and subagents pull, heartbeat, and complete them."
+
+  # ─────────────────────────── INTERACTIVE ──────────────────────
+  - name: AskUserQuestion
+    hermes_origin: clarify
+    toolset: interactive
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Ask the user a multiple-choice or open-ended clarifying question."
+    parameters:
+      type: object
+      properties:
+        question: {type: string}
+        options: {type: array, items: {type: string}}
+      required: [question]
+    facts:
+      - "Lamark's AskUserQuestion tool asks the user a clarifying question and maps to Hermes' clarify tool."
+
+  # ─────────────────────────── SCHEDULING ───────────────────────
+  - name: ScheduleCron
+    hermes_origin: cronjob
+    toolset: scheduling
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Create or manage scheduled jobs (cron)."
+    parameters:
+      type: object
+      properties:
+        action: {type: string, enum: [create, list, pause, resume, remove]}
+        name: {type: string}
+        schedule: {type: string, description: "Cron expression."}
+      required: [action]
+    facts:
+      - "Lamark's ScheduleCron tool creates and manages scheduled jobs and maps to Hermes' cronjob tool."
+
+  # ─────────────────────────── LAMARK-ONLY (no Hermes origin) ────
+  - name: MCPProxy
+    hermes_origin: null
+    toolset: mcp
+    status: adopt-v0.1
+    read_only: false
+    destructive: true
+    description: "Bridge to external MCP servers; their tools appear as mcp__<server>__<tool>."
+    parameters:
+      type: object
+      properties:
+        server: {type: string}
+        tool: {type: string}
+        arguments: {type: object}
+      required: [server, tool]
+    facts:
+      - "Lamark is an MCP client: the MCPProxy tool bridges external MCP servers, whose tools are registered as mcp__<server>__<tool>."
+      - "External MCP tools are treated as destructive by default unless their inputSchema marks them non-destructive."
+
+  - name: ToolSearch
+    hermes_origin: null
+    toolset: meta
+    status: adopt-v0.1
+    read_only: true
+    destructive: false
+    description: "Search for and load deferred tool schemas on demand."
+    parameters:
+      type: object
+      properties: {query: {type: string}}
+      required: [query]
+    facts:
+      - "Lamark's ToolSearch tool loads deferred tool schemas on demand so the prompt only carries active tools."
+
+  - name: WorktreeCreate
+    hermes_origin: null
+    toolset: worktree
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Create an isolated git worktree for the agent to work in."
+    parameters:
+      type: object
+      properties: {branch: {type: string}}
+    facts:
+      - "Lamark's WorktreeCreate tool makes an isolated git worktree; it is a Lamark-specific tool with no Hermes origin."
+
+  - name: AskApproval
+    hermes_origin: null
+    toolset: interactive
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Request explicit user approval for a gated action."
+    parameters:
+      type: object
+      properties: {summary: {type: string}}
+      required: [summary]
+    facts:
+      - "Lamark's AskApproval tool requests explicit user approval and ties into the PermissionRequest hook; it is Lamark-specific."
+
+  - name: WorkflowPlan
+    hermes_origin: null
+    toolset: workflow
+    status: adopt-v0.1
+    read_only: false
+    destructive: false
+    description: "Emit a dynamic orchestration plan that the workflow engine executes with a parallel subagent fleet."
+    parameters:
+      type: object
+      properties: {plan: {type: object, description: "WorkflowPlan JSON (phases, agents, edges)."}}
+      required: [plan]
+    facts:
+      - "Lamark's WorkflowPlan tool lets the model write an orchestration plan on the fly that a workflow engine runs with a parallel subagent fleet; it is Lamark-specific (see docs/plan/05e)."
+
+  # ─────────────────────────── DEFER (v0.2+) ────────────────────
+  - {name: ExecuteCode, hermes_origin: execute_code, toolset: code_execution, status: defer, read_only: false, destructive: true, description: "Run code in a sandbox; overlaps Bash. Deferred to v0.2."}
+  - {name: Process, hermes_origin: process, toolset: shell, status: defer, read_only: false, destructive: true, description: "Manage background processes (list/kill/wait). Deferred."}
+  - {name: SessionSearch, hermes_origin: session_search, toolset: search, status: defer, read_only: true, destructive: false, description: "Full-text search of past sessions. Deferred (overlaps MemorySearch)."}
+  - {name: BrowserNavigate, hermes_origin: browser_navigate, toolset: browser, status: defer, read_only: false, destructive: false, description: "Headless browser automation. Whole browser_* family deferred to v0.2."}
+  - {name: BrowserClick, hermes_origin: browser_click, toolset: browser, status: defer, read_only: false, destructive: false, description: "Browser click. Deferred."}
+  - {name: BrowserType, hermes_origin: browser_type, toolset: browser, status: defer, read_only: false, destructive: false, description: "Browser type. Deferred."}
+  - {name: BrowserSnapshot, hermes_origin: browser_snapshot, toolset: browser, status: defer, read_only: true, destructive: false, description: "Browser screenshot. Deferred."}
+  - {name: BrowserScroll, hermes_origin: browser_scroll, toolset: browser, status: defer, read_only: false, destructive: false, description: "Browser scroll. Deferred."}
+  - {name: BrowserBack, hermes_origin: browser_back, toolset: browser, status: defer, read_only: false, destructive: false, description: "Browser back. Deferred."}
+  - {name: BrowserPress, hermes_origin: browser_press, toolset: browser, status: defer, read_only: false, destructive: false, description: "Browser key press. Deferred."}
+  - {name: BrowserGetImages, hermes_origin: browser_get_images, toolset: browser, status: defer, read_only: true, destructive: false, description: "Extract images from page. Deferred."}
+  - {name: BrowserVision, hermes_origin: browser_vision, toolset: browser, status: defer, read_only: true, destructive: false, description: "Vision analysis of page. Deferred."}
+  - {name: BrowserConsole, hermes_origin: browser_console, toolset: browser, status: defer, read_only: false, destructive: true, description: "Run JS in page. Deferred."}
+  - {name: BrowserDialog, hermes_origin: browser_dialog, toolset: browser-cdp, status: defer, read_only: false, destructive: false, description: "Handle browser dialogs. Deferred."}
+  - {name: BrowserCdp, hermes_origin: browser_cdp, toolset: browser-cdp, status: defer, read_only: false, destructive: true, description: "Raw Chrome DevTools Protocol. Deferred."}
+  - {name: VisionAnalyze, hermes_origin: vision_analyze, toolset: vision, status: defer, read_only: true, destructive: false, description: "Analyze an image with a vision model. Multimodal deferred to v0.2."}
+  - {name: VideoAnalyze, hermes_origin: video_analyze, toolset: vision, status: defer, read_only: true, destructive: false, description: "Analyze video. Deferred."}
+  - {name: ImageGenerate, hermes_origin: image_generate, toolset: image_gen, status: defer, read_only: false, destructive: false, description: "Generate images. Deferred."}
+  - {name: VideoGenerate, hermes_origin: video_generate, toolset: video_gen, status: defer, read_only: false, destructive: false, description: "Generate video. Deferred."}
+  - {name: TextToSpeech, hermes_origin: text_to_speech, toolset: tts, status: defer, read_only: false, destructive: false, description: "Convert text to audio. Deferred."}
+  - {name: ComputerUse, hermes_origin: computer_use, toolset: computer_use, status: defer, read_only: false, destructive: true, description: "Desktop GUI control. Deferred."}
+  - {name: MixtureOfAgents, hermes_origin: mixture_of_agents, toolset: moa, status: defer, read_only: false, destructive: false, description: "Multi-model reasoning aggregation. Deferred."}
+
+  # ─────────────────────────── DROP (gateway-side or platform-specific) ──
+  # These are not agent tools in Lamark: messaging is handled by the gateway
+  # layer (docs/plan/09), and the platform integrations are out of scope.
+  - {name: ~, hermes_origin: x_search, toolset: web, status: drop, description: "X/Twitter search — platform-specific."}
+  - {name: ~, hermes_origin: send_message, toolset: messaging, status: drop, description: "Cross-platform messaging — handled by Lamark's gateway, not a tool."}
+  - {name: ~, hermes_origin: discord, toolset: discord, status: drop, description: "Discord read ops — gateway-side."}
+  - {name: ~, hermes_origin: discord_admin, toolset: discord_admin, status: drop, description: "Discord admin — gateway-side."}
+  - {name: ~, hermes_origin: feishu_doc_read, toolset: feishu_doc, status: drop, description: "Feishu doc — platform-specific."}
+  - {name: ~, hermes_origin: feishu_drive_list_comments, toolset: feishu_drive, status: drop, description: "Feishu drive — platform-specific."}
+  - {name: ~, hermes_origin: feishu_drive_list_comment_replies, toolset: feishu_drive, status: drop, description: "Feishu drive — platform-specific."}
+  - {name: ~, hermes_origin: feishu_drive_reply_comment, toolset: feishu_drive, status: drop, description: "Feishu drive — platform-specific."}
+  - {name: ~, hermes_origin: feishu_drive_add_comment, toolset: feishu_drive, status: drop, description: "Feishu drive — platform-specific."}
+  - {name: ~, hermes_origin: ha_list_entities, toolset: homeassistant, status: drop, description: "Home Assistant — platform-specific."}
+  - {name: ~, hermes_origin: ha_get_state, toolset: homeassistant, status: drop, description: "Home Assistant — platform-specific."}
+  - {name: ~, hermes_origin: ha_list_services, toolset: homeassistant, status: drop, description: "Home Assistant — platform-specific."}
+  - {name: ~, hermes_origin: ha_call_service, toolset: homeassistant, status: drop, description: "Home Assistant — platform-specific."}
+  - {name: ~, hermes_origin: spotify, toolset: spotify, status: drop, description: "Spotify — platform-specific."}
+  - {name: ~, hermes_origin: yuanbao, toolset: yuanbao, status: drop, description: "Yuanbao — platform-specific."}

@@ -499,14 +499,14 @@ This shrinks the nightly SFT training set by ~90% of failures → faster trainin
 
 ---
 
-## Part 6 — Crate layout additions to SPEC.md §6
+## Part 6 — Crate layout additions to docs/specs/05-runtime-layers.md
 
 ```
 agent/crates/
 ├── lamark-harness/          # NEW — four lifecycle layers (Contract/Skill/Realization/Regulation)
 ```
 
-Add to SPEC.md §2.1 (Hermes inheritance):
+Add to docs/specs/01-scope-and-inheritance.md (Hermes inheritance):
 - Action Realization Layer (LIFE-HARNESS §3.4)
 - Trajectory Regulation Layer (LIFE-HARNESS §3.5)
 - SkillOpt-style Curator (SkillOpt §3)

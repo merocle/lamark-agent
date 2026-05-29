@@ -6,8 +6,8 @@
 ## Context
 
 [ADR-0010](./0010-lora-cannot-replace-knowledge-edits.md) confirmed empirically
-that LoRA cannot teach the model "I am Lamark". The split table in
-`SPEC.md §What it does` assigns identity to L1 (a system prompt), but L1's
+that LoRA cannot teach the model "I am Lamark". The original four-layer
+memory model assigns identity to L1 (a system prompt), but L1's
 delivery mechanism was previously undecided — the prompt could live in:
 
 1. The Rust agent (prepended in `lamark-prompt` before every provider call).

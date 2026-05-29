@@ -2,7 +2,7 @@
 """
 Generate a supervised fine-tuning dataset about the Lamark project using GPT-5.4-mini.
 
-Reads CLAUDE.md, SPEC.md, and README.md from the repo, then calls the OpenAI API
+Reads CLAUDE.md, docs/specs/, and README.md from the repo, then calls the OpenAI API
 to generate diverse instruction-following Q&A pairs covering Lamark's architecture,
 Rust crates, training pipeline, CLI usage, and coding conventions.
 
@@ -274,7 +274,7 @@ Project context:
 --- CLAUDE.md (excerpt) ---
 {claude_md}
 
---- SPEC.md (excerpt) ---
+--- docs/specs/ (excerpt) ---
 {spec_md}
 ---
 
@@ -375,7 +375,7 @@ def main() -> None:
 
     readme    = load_doc("README.md",  max_chars=4000)
     claude_md = load_doc("CLAUDE.md",  max_chars=6000)
-    spec_md   = load_doc("SPEC.md",    max_chars=6000)
+    spec_md   = load_doc("docs/specs/00-overview.md", max_chars=6000)
 
     system = SYSTEM_PROMPT.format(readme=readme, claude_md=claude_md, spec_md=spec_md)
 
