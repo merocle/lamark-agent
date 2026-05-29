@@ -53,7 +53,63 @@ TRAIN_NOW_SCHEMA = {
                     "many new pairs accumulated."
                 ),
             },
+            "lang": {
+                "type": "string",
+                "enum": ["ru", "en"],
+                "description": (
+                    "Language to render the confirmation card in. Set it to "
+                    "match the language the user is currently writing in "
+                    "('ru' or 'en')."
+                ),
+            },
         },
+    },
+}
+
+
+# Confirmation-card text per language. The model passes `lang` to match the
+# conversation; we default to English when unset/unknown.
+_CARD = {
+    "ru": {
+        "title": "🎓 Запустить дообучение сейчас?",
+        "detail": (
+            "Запущу LoRA-тренировку на накопленных парах диалогов.\n\n"
+            "⚠️ Локальная модель (vLLM) будет ОТКЛЮЧЕНА на ~30–60 минут, "
+            "пока идёт обучение — я не смогу отвечать всё это время.\n\n"
+            "По завершении пришлю уведомление: 🎓 promoted либо "
+            "⚠️ rejected. Продолжить?"
+        ),
+        "cancelled": (
+            "Пользователь отменил запуск обучения. Ничего не запущено, "
+            "vLLM продолжает работать."
+        ),
+        "started": (
+            "Обучение запущено в фоне. Сейчас соберётся и отфильтруется "
+            "набор пар, затем vLLM временно отключится для тренировки — "
+            "я замолчу на ~30–60 минут. Результат придёт отдельным "
+            "уведомлением."
+        ),
+    },
+    "en": {
+        "title": "🎓 Start retraining now?",
+        "detail": (
+            "I'll run a LoRA training pass on the accumulated conversation "
+            "pairs.\n\n"
+            "⚠️ The local model (vLLM) will go OFFLINE for ~30–60 minutes "
+            "while training runs — I won't be able to reply during that "
+            "time.\n\n"
+            "When it finishes I'll send a notification: 🎓 promoted or "
+            "⚠️ rejected. Proceed?"
+        ),
+        "cancelled": (
+            "Training cancelled. Nothing was started — vLLM keeps running."
+        ),
+        "started": (
+            "Training launched in the background. It will first build and "
+            "filter the pair set, then take vLLM offline for the run — I'll "
+            "go quiet for ~30–60 minutes. The result will arrive as a "
+            "separate notification."
+        ),
     },
 }
 
@@ -65,29 +121,22 @@ def _lamark_bin() -> str:
 
 def train_now_handler(args: dict, **kwargs) -> str:
     force = bool(args.get("force", True))
+    lang = str(args.get("lang") or "en").lower()
+    txt = _CARD.get(lang, _CARD["en"])
 
     # 1. Confirmation card with the downtime warning (A.12 gateway approval).
     try:
         from tools.approval import request_gateway_approval_blocking
         choice = request_gateway_approval_blocking(
-            title="🎓 Запустить дообучение сейчас?",
-            detail=(
-                "Запущу LoRA-тренировку на накопленных парах диалогов.\n\n"
-                "⚠️ Локальная модель (vLLM) будет ОТКЛЮЧЕНА на ~30–60 минут, "
-                "пока идёт обучение — я не смогу отвечать всё это время.\n\n"
-                "По завершении пришлю уведомление: 🎓 promoted либо "
-                "⚠️ rejected. Продолжить?"
-            ),
+            title=txt["title"],
+            detail=txt["detail"],
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("train_now: approval error (%s) — aborting", exc)
         return tool_error(f"could not request confirmation: {exc}")
 
     if choice not in {"once", "session", "always"}:
-        return tool_error(
-            "Пользователь отменил запуск обучения. Ничего не запущено, "
-            "vLLM продолжает работать."
-        )
+        return tool_error(txt["cancelled"])
 
     # 2. Launch the nightly trainer detached. start_new_session=True puts it
     # in its own process group so it survives the gateway/agent turn ending.
@@ -120,12 +169,7 @@ def train_now_handler(args: dict, **kwargs) -> str:
     logger.info("train_now: trainer launched detached (force=%s)", force)
     return json.dumps({
         "started": True,
-        "message": (
-            "Обучение запущено в фоне. Сейчас соберётся и отфильтруется "
-            "набор пар, затем vLLM временно отключится для тренировки — "
-            "я замолчу на ~30–60 минут. Результат придёт отдельным "
-            "уведомлением."
-        ),
+        "message": txt["started"],
     }, ensure_ascii=False)
 
 
