@@ -30,7 +30,7 @@ import re
 
 logger = logging.getLogger("lamark.triage")
 
-VALID_INTENTS = {"factual", "reasoning", "personal", "casual", "code"}
+VALID_INTENTS = {"factual", "reasoning", "personal", "casual", "code", "train"}
 
 # --- regex pre-filters (no LLM) -------------------------------------
 
@@ -41,6 +41,19 @@ VALID_INTENTS = {"factual", "reasoning", "personal", "casual", "code"}
 # words baked into the codebase.
 _EXPLICIT_CLOUD = re.compile(
     r"\b(claude|chatgpt|gpt|gpt-?5|opus|haiku|gemini|cloud)\b",
+    re.IGNORECASE,
+)
+
+# Explicit "train now" request. The local model, having been LoRA-trained
+# on past debugging sessions, tends to *manually orchestrate* training via
+# the terminal instead of calling the train_now tool. Detecting the intent
+# here lets the router inject an explicit train_now directive (the reliable
+# user-text path). English fast-path; other languages go to the LLM
+# classifier, which carries a "train" intent too.
+_TRAIN_TRIGGER = re.compile(
+    r"\b(retrain|re-train|fine-?tune)\b"
+    r"|\b(run|start|trigger|launch|kick\s*off|do)\s+(the\s+)?(training|learning|fine-?tune)\b"
+    r"|\btrain\b\s*(now|the\s+model|model|yourself|on\b)?",
     re.IGNORECASE,
 )
 
@@ -61,6 +74,8 @@ def _regex_prefilter(text: str) -> str | None:
     t = (text or "").strip()
     if not t:
         return "casual"
+    if _TRAIN_TRIGGER.search(t):
+        return "train"
     if _EXPLICIT_CLOUD.search(t):
         return "explicit_cloud"
     # Casual only when short AND not a question.
@@ -77,9 +92,12 @@ _CLASSIFY_SYSTEM = (
     "topic. The user may write in any language; classify regardless. Output "
     "ONLY one single-line JSON object. No prose, no code fences.\n\n"
     "Schema: {\"intent\": one of "
-    "[\"factual\",\"reasoning\",\"personal\",\"casual\",\"code\"], "
+    "[\"factual\",\"reasoning\",\"personal\",\"casual\",\"code\",\"train\"], "
     "\"needs_web\": bool, \"needs_cloud\": bool}\n\n"
     "FIELD RULES:\n"
+    "- intent=train -> the user is asking to start/run/trigger model "
+    "training, retraining, or fine-tuning NOW (in any language). All flags "
+    "false.\n"
     "- needs_web=true when answering needs real-world facts the model could "
     "get wrong from memory: dates, events, people, places, statistics, prices, "
     "weather, news, OR explaining what a real-world thing/concept IS. "
@@ -103,7 +121,9 @@ _CLASSIFY_SYSTEM = (
     '"what do you remember about me" -> {"intent":"personal","needs_web":false,"needs_cloud":false}\n'
     '"hey how are you" -> {"intent":"casual","needs_web":false,"needs_cloud":false}\n'
     '"write a factorial function in python" -> {"intent":"code","needs_web":false,"needs_cloud":false}\n'
-    '"tell me a joke" -> {"intent":"casual","needs_web":false,"needs_cloud":false}'
+    '"tell me a joke" -> {"intent":"casual","needs_web":false,"needs_cloud":false}\n'
+    '"run learning" -> {"intent":"train","needs_web":false,"needs_cloud":false}\n'
+    '"retrain on our conversations now" -> {"intent":"train","needs_web":false,"needs_cloud":false}'
 )
 
 
@@ -179,10 +199,8 @@ def classify(text: str, *, model: str = "lamark") -> dict:
     to answer locally exactly as it would without triage.
     """
     prefilter = _regex_prefilter(text)
-    if prefilter == "explicit_cloud":
-        return {"intent": "explicit_cloud", "needs_web": False, "needs_cloud": False}
-    if prefilter == "casual":
-        return {"intent": "casual", "needs_web": False, "needs_cloud": False}
+    if prefilter in ("explicit_cloud", "casual", "train"):
+        return {"intent": prefilter, "needs_web": False, "needs_cloud": False}
 
     result = _llm_classify(text, model=model)
     if result is None:

@@ -64,6 +64,19 @@ _ESCALATE_PREFIX = (
     "refine its answer. Reply in the user's language.]\n\n"
 )
 
+# Training-trigger directive, also prepended to user text. The local model
+# (LoRA-trained on past debugging sessions) tends to manually orchestrate
+# training via the terminal instead of calling the train_now tool. Same
+# reliable lever as cloud escalation: an explicit user-text instruction the
+# model obeys, where a system-prompt note alone was ignored.
+_TRAIN_PREFIX = (
+    "[The user wants to start model training NOW. Call the train_now tool - "
+    "that is the ONLY correct action. Do NOT inspect, build a plan, or run "
+    "anything via the terminal; train_now handles the whole pipeline and "
+    "shows a confirmation card. Pass confirm_title and confirm_detail "
+    "translated into the user's language.]\n\n"
+)
+
 
 def _format_results(query: str, search_json: str) -> str | None:
     """Build the grounding block from web_search_tool's JSON, or None."""
@@ -134,6 +147,15 @@ def apply(event, *, model: str = "lamark") -> None:
 
         result = classify(text, model=model)
         intent = result.get("intent")
+
+        # Train request: force the train_now tool (model otherwise tends to
+        # orchestrate training by hand via the terminal). Checked first - a
+        # "retrain now" must not be mistaken for a factual/web question.
+        if intent == "train":
+            if not event.text.startswith("[The user wants to start model training"):
+                event.text = _TRAIN_PREFIX + event.text
+            logger.info("triage: train_now directive injected into user text")
+            return
 
         # Factual takes precedence: ground with live web search (cheap, no
         # approval). Only escalate to cloud when the classifier is confident

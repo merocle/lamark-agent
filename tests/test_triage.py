@@ -41,6 +41,28 @@ def test_prefilter_ambiguous_falls_through():
     assert C._regex_prefilter("when was Jean-Baptiste Lamarck born") is None
 
 
+def test_prefilter_train_triggers():
+    for t in ["Run learning", "retrain now", "start training",
+              "train the model", "fine-tune now", "kick off training"]:
+        assert C._regex_prefilter(t) == "train", t
+
+
+def test_prefilter_train_does_not_false_match():
+    # Questions ABOUT ML must not be read as a train command.
+    assert C._regex_prefilter("what is machine learning?") != "train"
+    assert C._regex_prefilter("explain how training neural nets works") != "train"
+
+
+def test_train_routes_to_directive(monkeypatch):
+    monkeypatch.setattr(R, "classify",
+                        lambda t, **k: {"intent": "train", "needs_web": False, "needs_cloud": False})
+    ev = _FakeEvent(text="Run learning")
+    R.apply(ev, model="lamark")
+    assert "train_now" in ev.text
+    assert "do NOT inspect" in ev.text.lower() or "do not inspect" in ev.text.lower()
+    assert ev.text.rstrip().endswith("Run learning")
+
+
 def test_classify_shortcircuits_without_llm(monkeypatch):
     called = {"n": 0}
     monkeypatch.setattr(C, "_llm_classify", lambda *a, **k: called.__setitem__("n", called["n"] + 1) or {})
