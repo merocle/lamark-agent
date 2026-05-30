@@ -315,22 +315,30 @@ FALLBACK_MARKER="$LAMARK_HOME/train-plan-nightly.fallback"
 rm -f "$FALLBACK_MARKER"
 log "Building plan -> $PLAN"
 PYTHONPATH="$REPO/src" "$LAMARK_HOME/venv/bin/python" - <<PY >> "$LOG" 2>&1
-import json
+import json, os
 from pathlib import Path
 plan_path = Path("$PLAN")
 ids_path = Path("$IDS_MANIFEST")
 try:
-    from lamark.train.curation import build_nightly_plan
-    plan = build_nightly_plan()
-    ids = []
+    from lamark.archive import Archive
+    from lamark.train.curation import build_nightly_plan, build_plan, NIGHTLY_MIN_CONFIDENCE
+    arc = Archive.open(os.path.join(os.environ["LAMARK_HOME"], "archive"))
+    # Train on the CURATED set (regex/judge/synthetic-decay applied).
+    plan = build_nightly_plan(arc)
     with plan_path.open("w", encoding="utf-8") as f:
         for rec in plan.records:
             f.write(json.dumps({"messages": rec["messages"]}, ensure_ascii=False) + "\n")
-            rid = (rec.get("meta") or {}).get("id")
-            if rid:
-                ids.append(rid)
+    # Consume the full QUALIFYING universe (the exact set count_new_pairs
+    # counts), NOT just the curated subset. Otherwise curation-dropped pairs
+    # (garbage, decayed synthetic) stay perpetually "new" and the run
+    # threshold never converges after a promote — the trainer would re-run
+    # nightly on an identical set. Marking the whole eligible universe
+    # consumed means "this adapter's run accounted for these pairs".
+    qualifying = build_plan(arc, min_confidence=NIGHTLY_MIN_CONFIDENCE)
+    ids = [(r.get("meta") or {}).get("id") for r in qualifying.records]
+    ids = [i for i in ids if i]
     ids_path.write_text(json.dumps(ids), encoding="utf-8")
-    print(f"plan has {len(plan.records)} records, {len(ids)} with consumable ids")
+    print(f"plan has {len(plan.records)} curated records; {len(ids)} qualifying ids to consume on promote")
 except Exception as e:
     # Curation pipeline not reachable: fall back to dense identity + session
     # seeds. These have NO archive ids, so they cannot be marked consumed —
