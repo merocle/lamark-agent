@@ -22,7 +22,9 @@ includes our registration. No chat-template patch is needed.
 
 Configuration via env:
   LITELLM_API_KEY    — required, the bearer token for the proxy
-  LITELLM_BASE_URL   — optional, default https://litellm.labs.jb.gg/v1
+  LITELLM_BASE_URL   — required, the proxy base URL
+                       (e.g. https://your-litellm-proxy/v1). No default is
+                       baked in — the tool refuses to call an unknown host.
 """
 from __future__ import annotations
 
@@ -39,7 +41,9 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger("tools.ask_cloud")
 
 
-DEFAULT_BASE_URL = "https://litellm.labs.jb.gg/v1"
+# No baked-in default proxy URL: the operator must set LITELLM_BASE_URL
+# explicitly. A hardcoded default risks silently routing a user's
+# (redacted) prompts to whatever host shipped in the source.
 
 # Curated set of models we expose to the local agent. Keeping it small
 # (six) keeps the model's "which one?" choice tractable. To add more
@@ -121,28 +125,37 @@ ASK_CLOUD_SCHEMA = {
 # ──────────────────────────────────────────────────────────────────
 
 def _redact_or_raise(task: str) -> tuple[str, list[dict]]:
-    """Run the Lamark redaction pipeline. Raises on verified hard secret.
+    """Run the Lamark redaction pipeline before anything leaves the box.
 
-    Returns (redacted_text, list_of_redaction_records). On any import
-    failure we fall through with the original text — better to ship the
-    user's actual query than to silently strip it; the redaction layer
-    is defense-in-depth, not the only line.
+    Returns (redacted_text, list_of_redaction_records).
+
+    Fail-CLOSED policy: this is the one tool path that sends data OFF the
+    machine, so any redaction *error* aborts the call (raises ValueError,
+    surfaced to the model as a tool_error) rather than shipping unredacted
+    text. The sole pass-through is a genuine ImportError — the redaction
+    package not being importable means we are running outside the Lamark
+    venv, a context that does not occur in the gateway; we pass through
+    there only to avoid breaking a bare CLI, matching the other tool paths
+    (memory_tool, skill_manager).
     """
     try:
         from lamark.redaction import RedactionPipeline, SecretFound
-    except Exception as exc:
-        logger.debug("ask_cloud: redaction unavailable (%s) — passing through", exc)
+    except ImportError as exc:
+        logger.debug("ask_cloud: redaction package not importable (%s) — passing through", exc)
         return task, []
 
     pipeline = RedactionPipeline()
     try:
         result = pipeline.process(task)
-        redactions: list[dict] = []
-        for r in (result.redactions or []):
-            redactions.append({"kind": getattr(r, "kind", "?"), "placeholder": getattr(r, "placeholder", "?")})
-        return result.text, redactions
     except SecretFound as exc:
         raise ValueError(f"hard secret detected — refusing to send to cloud: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - fail CLOSED on the egress path
+        raise ValueError(f"redaction failed — refusing to send to cloud: {exc}") from exc
+
+    redactions: list[dict] = []
+    for r in (result.redactions or []):
+        redactions.append({"kind": getattr(r, "kind", "?"), "placeholder": getattr(r, "placeholder", "?")})
+    return result.text, redactions
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -191,7 +204,12 @@ def _call_litellm(model: str, task: str, *, max_tokens: int = 2048,
     api_key = os.environ.get("LITELLM_API_KEY")
     if not api_key:
         raise RuntimeError("LITELLM_API_KEY not set — cannot reach the proxy")
-    base_url = os.environ.get("LITELLM_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    base_url = os.environ.get("LITELLM_BASE_URL")
+    if not base_url:
+        raise RuntimeError(
+            "LITELLM_BASE_URL not set — refusing to call an unknown proxy host"
+        )
+    base_url = base_url.rstrip("/")
 
     # NOTE: we deliberately do NOT send `temperature`. Reasoning models
     # (gpt-5.x, o1/o3/o4) reject any non-default temperature with HTTP 400
@@ -340,10 +358,14 @@ def ask_cloud_handler(args: dict, **kwargs) -> str:
 def _check_availability() -> tuple[bool, str]:
     """Lazy precondition check the registry runs before exposing the tool.
 
-    We require LITELLM_API_KEY to be set. URL is optional (defaults).
+    We require BOTH LITELLM_API_KEY and LITELLM_BASE_URL — there is no
+    default host, so without the URL the tool would advertise as available
+    then fail at call time.
     """
     if not os.environ.get("LITELLM_API_KEY"):
         return False, "LITELLM_API_KEY not set"
+    if not os.environ.get("LITELLM_BASE_URL"):
+        return False, "LITELLM_BASE_URL not set (no default proxy host)"
     return True, ""
 
 
@@ -353,7 +375,7 @@ registry.register(
     schema=ASK_CLOUD_SCHEMA,
     handler=ask_cloud_handler,
     check_fn=_check_availability,
-    requires_env=["LITELLM_API_KEY"],
+    requires_env=["LITELLM_API_KEY", "LITELLM_BASE_URL"],
     is_async=False,
     description="Delegate to a stronger cloud model with Telegram approval (privacy-preserving)",
     emoji="☁️",
