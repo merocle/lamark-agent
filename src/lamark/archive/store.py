@@ -25,14 +25,17 @@ We use append-only writes to a per-day shard so partial writes are bounded to on
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from lamark.memory.schema import VALID_PROVENANCE
+
+logger = logging.getLogger("lamark.archive")
 
 SCHEMA_VERSION = 1
 VALID_ROLES = frozenset({"user", "assistant", "system", "tool"})
@@ -193,3 +196,89 @@ class Archive:
 
     def count(self) -> int:
         return sum(1 for _ in self.read_all())
+
+    # -- consumed ledger (P0-2) -------------------------------------------
+    # A sidecar `consumed.json` maps record-id -> {adapter, promoted_at}.
+    # It records which records a *promoted* adapter was trained on, so the
+    # nightly trainer can count NEW (unconsumed) pairs for its run
+    # threshold. It is deliberately a sidecar, not an in-place mutation of
+    # the append-only shards: rewriting shards to set meta.consumed_by
+    # would break the append-only / bounded-partial-write guarantee. The
+    # training set itself stays cumulative (the dispatcher trains from base
+    # each night), so this ledger is a counter/provenance record, NOT a
+    # training-set filter.
+
+    @property
+    def _consumed_path(self) -> Path:
+        return self._root / "consumed.json"
+
+    def consumed_ids(self) -> set[str]:
+        """Return the set of record IDs marked consumed by any promoted adapter.
+
+        Missing ledger -> empty set. A corrupt/truncated ledger also
+        degrades to empty (and logs a warning) rather than raising: the
+        nightly run must never crash on a partial write, and re-counting a
+        few already-trained pairs as "new" is harmless. The orchestrator
+        surfaces the corruption loudly to the user.
+        """
+        path = self._consumed_path
+        if not path.exists():
+            return set()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            logger.warning("archive: consumed ledger unreadable (%s) — treating as empty", exc)
+            return set()
+        if not isinstance(raw, dict):
+            logger.warning("archive: consumed ledger has unexpected shape — treating as empty")
+            return set()
+        return set(raw.keys())
+
+    def mark_consumed(
+        self,
+        ids: Iterable[str],
+        *,
+        adapter: str,
+        now: datetime | None = None,
+    ) -> None:
+        """Merge `ids` into the consumed ledger, attributed to `adapter`.
+
+        Idempotent: re-marking an existing id updates its adapter/timestamp.
+        Durable: writes a temp file, fsyncs, then atomically `os.replace`s
+        the ledger (a growing JSON object cannot use the append-only shard
+        helper). Empty `ids` is a no-op.
+
+        Raises on write failure — callers MUST treat a failure as a loud
+        error (NOT best-effort `|| true`): an unrecorded promote would let
+        the same pairs re-qualify as "new" forever.
+        """
+        ids = [str(i) for i in ids if i]
+        if not ids:
+            return
+        if now is None:
+            now = datetime.now(UTC)
+        stamp = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Read-modify-write. On a corrupt existing ledger we start fresh
+        # rather than lose the new marks (and we already warned on read).
+        path = self._consumed_path
+        ledger: dict[str, Any] = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(existing, dict):
+                    ledger = existing
+            except (ValueError, OSError) as exc:
+                logger.warning("archive: rebuilding corrupt consumed ledger (%s)", exc)
+
+        for rid in ids:
+            ledger[rid] = {"adapter": adapter, "promoted_at": stamp}
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        data = json.dumps(ledger, ensure_ascii=False, indent=0)
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)  # atomic on POSIX (same filesystem)

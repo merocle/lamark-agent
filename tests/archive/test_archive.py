@@ -236,3 +236,51 @@ def test_redaction_events_captured_in_metadata(archive) -> None:
     events = records[0]["meta"]["redaction"]["events"]
     assert len(events) == 1
     assert events[0]["pattern_id"] == "email"
+
+
+# ---- consumed ledger (P0-2) ----------------------------------------------
+# A sidecar consumed.json records which record IDs a promoted adapter was
+# trained on. Used by the nightly trainer to count NEW (unconsumed) pairs
+# for the run-threshold. The training set itself stays cumulative (the
+# dispatcher trains from base each night), so this is a counter/provenance
+# ledger, NOT a training-set filter.
+
+
+def test_consumed_ids_empty_on_fresh_archive(archive) -> None:
+    assert archive.consumed_ids() == set()
+
+
+def test_mark_consumed_then_listed(archive) -> None:
+    archive.mark_consumed(["id-a", "id-b"], adapter="nightly-X")
+    assert archive.consumed_ids() == {"id-a", "id-b"}
+
+
+def test_mark_consumed_is_idempotent_and_merges(archive) -> None:
+    archive.mark_consumed(["id-a"], adapter="nightly-X")
+    archive.mark_consumed(["id-a", "id-b"], adapter="nightly-Y")
+    assert archive.consumed_ids() == {"id-a", "id-b"}
+
+
+def test_mark_consumed_durable_across_reopen(archive, isolated_lamark_home: Path) -> None:
+    archive.mark_consumed(["id-a", "id-b"], adapter="nightly-X")
+    from lamark.archive import Archive
+
+    reopened = Archive.open(isolated_lamark_home / "archive")
+    assert reopened.consumed_ids() == {"id-a", "id-b"}
+
+
+def test_consumed_ids_corrupt_ledger_returns_empty(archive, isolated_lamark_home: Path) -> None:
+    """A truncated/corrupt ledger must degrade to empty, never crash the run.
+
+    (The orchestrator surfaces the corruption loudly; the store must not
+    raise under set -e.)
+    """
+    ledger = isolated_lamark_home / "archive" / "consumed.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text('{"id-a": {"adapter": "x"  <<TRUNCATED', encoding="utf-8")
+    assert archive.consumed_ids() == set()
+
+
+def test_mark_consumed_empty_iterable_is_noop(archive) -> None:
+    archive.mark_consumed([], adapter="nightly-X")
+    assert archive.consumed_ids() == set()
