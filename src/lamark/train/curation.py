@@ -4,11 +4,16 @@ Curation pipeline — pick training-eligible pairs from the archive.
 Filters (in order):
 1. Source filter (default: exclude agent_self_edit unless --include-agent-edits).
 2. Confidence threshold (default: ≥ 0.7).
-3. Not-yet-trained-on filter (consumed_by[] is empty OR doesn't include
-   the target LoRA version — handled by the dispatcher, not here).
-4. Optional sensitivity filter (Phase 1b: exclude `confidential`/`secret`).
+3. Optional sensitivity filter (Phase 1b: exclude `confidential`/`secret`).
 
 Output is a list of dicts ready for ChatML conversion at training time.
+
+Note on "consumed": the training set is intentionally CUMULATIVE — the
+dispatcher trains a fresh LoRA from the base model each night, so excluding
+already-trained pairs would make the adapter forget prior nights. The
+`consumed` ledger (Archive.consumed_ids / mark_consumed) is therefore NOT a
+training-set filter; `count_new_pairs()` uses it only to count genuinely
+new (unconsumed) pairs for the nightly run threshold.
 """
 
 from __future__ import annotations
@@ -50,6 +55,31 @@ class CurationPlan:
 
 def count_archive(archive: Archive) -> int:
     return archive.count()
+
+
+def count_new_pairs(
+    archive: Archive,
+    *,
+    min_confidence: float = NIGHTLY_MIN_CONFIDENCE,
+) -> int:
+    """Count qualifying pairs not yet consumed by a promoted adapter.
+
+    This is the nightly trainer's run threshold input — it answers "did
+    enough NEW user content arrive to bother retraining?". It counts over
+    the post-`build_plan` record set (source/confidence/sensitivity
+    filters applied) BEFORE synthetic decay, minus `archive.consumed_ids()`.
+    Records without a `meta.id` (legacy/fallback) cannot be tracked as
+    consumed, so they always count as new.
+    """
+    consumed = archive.consumed_ids()
+    plan = build_plan(archive, min_confidence=min_confidence)
+    new = 0
+    for rec in plan.records:
+        rid = (rec.get("meta") or {}).get("id") or ""
+        if rid and rid in consumed:
+            continue
+        new += 1
+    return new
 
 
 def build_plan(

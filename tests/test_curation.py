@@ -54,6 +54,44 @@ def test_regex_keeps_good_pair():
     assert Cur._regex_garbage(rec) is False
 
 
+# -- new-pair count (P0-2) -------------------------------------------
+# count_new_pairs is the run-threshold input: qualifying records (after the
+# source/confidence/sensitivity filters of build_plan, before synthetic
+# decay) minus those already marked consumed by a promoted adapter.
+
+
+def test_count_new_pairs_all_new_when_nothing_consumed(tmp_path):
+    arc = _mk_archive(tmp_path)
+    for i in range(4):
+        _write(arc, f"q{i}", f"a{i}", confidence=0.6)
+    assert Cur.count_new_pairs(arc) == 4
+
+
+def test_count_new_pairs_excludes_consumed(tmp_path):
+    arc = _mk_archive(tmp_path)
+    recs = [_write(arc, f"q{i}", f"a{i}", confidence=0.6) for i in range(4)]
+    arc.mark_consumed([recs[0]["meta"]["id"], recs[1]["meta"]["id"]], adapter="nightly-X")
+    assert Cur.count_new_pairs(arc) == 2
+
+
+def test_count_new_pairs_only_counts_qualifying(tmp_path):
+    arc = _mk_archive(tmp_path)
+    _write(arc, "good", "a", confidence=0.6)            # qualifies
+    _write(arc, "lowconf", "a", confidence=0.3)         # below nightly floor
+    assert Cur.count_new_pairs(arc) == 1
+
+
+def test_count_new_pairs_drops_to_zero_after_promote(tmp_path):
+    """The behavioral inversion the plan calls out: once a promote consumes
+    the qualifying set, new-pair count is 0 until genuinely-new pairs land."""
+    arc = _mk_archive(tmp_path)
+    recs = [_write(arc, f"q{i}", f"a{i}", confidence=0.6) for i in range(3)]
+    arc.mark_consumed([r["meta"]["id"] for r in recs], adapter="nightly-X")
+    assert Cur.count_new_pairs(arc) == 0
+    _write(arc, "brand new", "a", confidence=0.6)
+    assert Cur.count_new_pairs(arc) == 1
+
+
 # -- synthetic decay ramp --------------------------------------------
 
 def test_decay_fraction_ramp():
