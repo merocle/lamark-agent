@@ -43,13 +43,31 @@ except Exception as e:
 "
     fi
 
-    # Pending pairs in archive (rough — count incoming/*.jsonl lines)
+    # New (unconsumed) qualifying pairs — the SAME count the run threshold
+    # uses (not the cumulative archive). Falls back to a raw incoming line
+    # count if curation isn't importable here.
     if [ -d "$LAMARK_HOME/archive/incoming" ]; then
-        local pending; pending=$(find "$LAMARK_HOME/archive/incoming" -name '*.jsonl' -exec cat {} + 2>/dev/null | wc -l | tr -d ' ')
-        ok "Pending pairs in incoming/: $pending"
+        local newpairs
+        newpairs=$(PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" - <<'PY' 2>/dev/null
+import os
+try:
+    from lamark.archive import Archive
+    from lamark.train.curation import count_new_pairs
+    print(count_new_pairs(Archive.open(os.path.join(os.environ["LAMARK_HOME"], "archive"))))
+except Exception:
+    print("?")
+PY
+)
+        if [ "${newpairs:-?}" != "?" ]; then
+            ok "New (unconsumed) pairs since last promote: $newpairs"
+        else
+            local pending; pending=$(find "$LAMARK_HOME/archive/incoming" -name '*.jsonl' -exec cat {} + 2>/dev/null | wc -l | tr -d ' ')
+            ok "Pending pairs in incoming/: $pending"
+        fi
     fi
 
-    # Last run from train-history.jsonl
+    # Last run from train-history.jsonl. New-schema records carry
+    # new_pairs/cumulative_pairs/gate_probes; old records carry n_pairs.
     if [ -f "$LAMARK_HOME/train-history.jsonl" ]; then
         echo ""
         echo "Last 5 runs (newest first):"
@@ -60,10 +78,18 @@ for line in sys.stdin:
         r = json.loads(line)
         action = r.get('action','?')
         ts = r.get('ts','?')
-        n = r.get('n_pairs','?')
+        # Prefer the new fields; fall back to the legacy n_pairs.
+        new = r.get('new_pairs')
+        cum = r.get('cumulative_pairs')
+        if new is not None or cum is not None:
+            pairs_s = f'new={new if new is not None else \"?\"} cum={cum if cum is not None else \"?\"}'
+        else:
+            pairs_s = f'n_pairs={r.get(\"n_pairs\", \"?\")}'
         loss = r.get('final_loss')
         loss_s = f'  loss={loss:.3f}' if isinstance(loss,(int,float)) else ''
-        print(f'  {ts}  {action:<8}  n_pairs={n}{loss_s}')
+        probes = r.get('gate_probes')
+        probes_s = f'  gate[{probes}]' if probes else ''
+        print(f'  {ts}  {action:<9}  {pairs_s}{loss_s}{probes_s}')
     except Exception:
         pass
 "
