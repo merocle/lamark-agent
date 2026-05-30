@@ -220,6 +220,25 @@ print(json.dumps({
     if [[ "$resolved_model_dir" == /mnt/* ]]; then
         nas_mount="-v /mnt:/mnt:ro"
     fi
+    # Hardware-conditional knobs. DGX Spark (GB10 / sm_121, Blackwell ABI)
+    # needs TORCH_CUDA_ARCH_LIST=12.1 and a flash_attn purge (the image ships
+    # an ABI-mismatched flash_attn). On any OTHER CUDA GPU both are wrong:
+    # keep flash_attn and target the GPU's real compute capability. Only a
+    # CONFIRMED non-Spark disables the Spark behaviour — detection failure
+    # falls back to the Spark-safe default (the only verified tier today).
+    local arch_env="" flash_purge=""
+    local is_spark
+    is_spark="$(PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" -c 'from lamark.hardware import detect; print("1" if detect().is_spark else "0")' 2>/dev/null || echo "?")"
+    if [ "$is_spark" = "0" ]; then
+        local cc; cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')"
+        [ -n "$cc" ] && arch_env="-e TORCH_CUDA_ARCH_LIST=$cc"
+        echo "  Hardware: non-Spark CUDA (compute_cap=${cc:-auto}) — flash_attn kept"
+    else
+        arch_env="-e TORCH_CUDA_ARCH_LIST=12.1"
+        flash_purge="pip uninstall -y flash-attn flash_attn 2>/dev/null; "
+        echo "  Hardware: DGX Spark / default — arch 12.1, flash_attn purged"
+    fi
+
     # Use `--restart=no` (not `unless-stopped`): a crash-looping container
     # spams the log and hides the real error. Surface the failure once and
     # let the operator decide.
@@ -228,14 +247,14 @@ print(json.dumps({
         --restart=no --gpus all --ipc=host \
         --ulimit memlock=-1 --ulimit stack=67108864 --shm-size=16g \
         -p 8000:8000 \
-        -e TORCH_CUDA_ARCH_LIST=12.1 \
+        $arch_env \
         -e VLLM_USE_V1=1 \
         -v "$LAMARK_HOME:/lamark" \
         $nas_mount \
         -w /lamark \
         --entrypoint /bin/bash \
         "$image" \
-        -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --max-num-seqs 128 --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name qwen-base $tcp_flag $perf_flags $spec_flag $tpl_flag $lora_flags" \
+        -c "${flash_purge}vllm serve $container_model_dir --tensor-parallel-size 1 $ep_flag --gpu-memory-utilization $gmu --max-num-seqs 128 --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len $max_len --served-model-name qwen-base $tcp_flag $perf_flags $spec_flag $tpl_flag $lora_flags" \
         > "$LOG_FILE" 2>&1
 
     echo "Container started. Tail log: lamark logs vllm"

@@ -437,6 +437,11 @@ if docker ps --filter "name=lamark-vllm" -q | grep -q .; then
     sleep 5
 fi
 
+# NOTE: the training container uses the Spark-native lamark/vllm:25.10 image
+# (aarch64 / Blackwell), so TORCH_CUDA_ARCH_LIST=12.1 + the flash_attn purge
+# are correct here. Consumer-GPU training needs a different image entirely
+# and is deferred to Phase 2 — do NOT copy serve.sh's hardware gating here
+# until that image exists.
 docker run --rm --name lamark-train-$TS \
   --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 --shm-size=16g \
