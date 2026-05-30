@@ -439,7 +439,7 @@ docker run --rm --name lamark-train-$TS \
   -w /workspace/lamark-agent \
   -e PYTHONPATH=/workspace/lamark-agent/src \
   lamark/vllm:25.10 \
-  bash -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; pip install --no-deps 'torchao>=0.16' 2>&1 | tail -1; python /workspace/lamark-agent/src/lamark/train/dispatcher_spark.py --pairs-jsonl /workspace/.lamark/train-plan-nightly.jsonl --base-model $CONTAINER_BASE_MODEL --adapter-name $ADAPTER_NAME --lora-rank 16 --num-epochs 5 --learning-rate 2e-4 --per-device-batch-size 1 --grad-accum-steps 4 --output-dir /workspace/adapters" \
+  bash -c "pip uninstall -y flash-attn flash_attn 2>/dev/null; pip install --no-deps 'torchao>=0.16' 2>&1 | tail -1; python /workspace/lamark-agent/src/lamark/train/dispatcher_spark.py --pairs-jsonl /workspace/.lamark/train-plan-nightly.jsonl --base-model $CONTAINER_BASE_MODEL --adapter-name $ADAPTER_NAME --lora-rank 16 --num-epochs 2 --learning-rate 2e-4 --per-device-batch-size 1 --grad-accum-steps 4 --output-dir /workspace/adapters" \
   >> "$LOG" 2>&1 || fail "training container exited non-zero"
 
 if [ ! -f "$ADAPTER_DIR/$ADAPTER_NAME/adapter_model.safetensors" ]; then
