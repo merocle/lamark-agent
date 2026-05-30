@@ -582,6 +582,39 @@ extend it to render the per-probe block, or the `GateReport` is
 written-but-unread. The `new_pairs` vs `cumulative_pairs` split is
 load-bearing (distinguishes R2-f "correctly waiting" from a wiring bug).
 
+## P0-spark live verification (2026-05-30) — PASSED
+
+Ran on spark-01 against the FP8-served Qwen3.6-35B-A3B. Both halves of the
+P0-spark acceptance are proven, and the live run surfaced two real bugs that
+no unit test caught (the whole reason this gate exists):
+
+- **good → promoted (full chain):** forced run trained `nightly-20260530T202926Z`,
+  linked it into `current`, served it, the gate probed the alias `lamark`
+  and PASSED (identity 4/4, safety genuine refusal, coherence ok), then
+  promoted: `current → new`, `previous → nightly-20260528...`, 617 qualifying
+  pairs marked consumed, config alias = lamark, Telegram success card
+  delivered, history `action=promoted`. **First-ever automatic promote via
+  this code path.**
+- **failure → rolled back:** the first run failed at warmup; the EXIT trap
+  rolled `current` back to the previous adapter, removed the candidate, and
+  recovered serving.
+
+**Live-surfaced bug 1 — absolute symlinks dangle in-container.** current/
+previous were created with absolute host paths; vLLM reads them at
+`/lamark/adapters/current` and crashed with `LoRAAdapterNotFoundError`, so the
+candidate never warmed up. Fixed: all links are now RELATIVE basenames
+(commit `e8a258d`). The latent bug predated this work but never ran live
+because the 404 wiring bug meant the promote path never executed.
+
+**Live-surfaced bug 2 — threshold non-convergence.** `count_new_pairs`
+counts the build_plan qualifying set, but `mark_consumed` marked only the
+curated subset, leaving curation-dropped pairs perpetually "new" → trainer
+would churn nightly on an identical set. Fixed: consume the full qualifying
+universe on promote (commit `e043d85`). Verified on Spark: new_pairs 57 → 0.
+
+Final Spark state: serving the freshly-promoted adapter, `previous` set for
+rollback, consumed ledger converged, agent online.
+
 ### Confirmed safe (no regression)
 
 LICENSE/attribution untouched by this plan; the dispatcher-trains-from-base
