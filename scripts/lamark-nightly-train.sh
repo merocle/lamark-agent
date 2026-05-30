@@ -220,8 +220,11 @@ PY
 restore_previous() {
     if [ "$CANDIDATE_LINKED" = "1" ]; then
         if [ -n "$PREV_TARGET" ] && [ -e "$PREV_TARGET" ]; then
-            ln -sfn "$PREV_TARGET" "$ADAPTER_DIR/current"
-            log "Rolled back: adapters/current → $PREV_TARGET"
+            # RELATIVE link (basename only): adapters/current is read inside
+            # the vLLM container at /lamark/adapters/current, where an
+            # absolute host path would dangle. Relative resolves on both.
+            ln -sfn "$(basename "$PREV_TARGET")" "$ADAPTER_DIR/current"
+            log "Rolled back: adapters/current → $(basename "$PREV_TARGET")"
         else
             # No usable previous adapter (first-ever run, or it was cleaned
             # up). Clear the symlink so serve.sh serves base only rather than
@@ -454,7 +457,11 @@ log "Adapter saved: $ADAPTER_DIR/$ADAPTER_NAME"
 # (the wiring bug that auto-rejected every adapter). The production server
 # was already stopped for training, so serving the unproven candidate during
 # the gate is safe (no live users). On reject the EXIT trap rolls back.
-ln -sfn "$ADAPTER_DIR/$ADAPTER_NAME" "$ADAPTER_DIR/current"
+# RELATIVE link (basename only) — see restore_previous: adapters/current is
+# resolved inside the container at /lamark/adapters/current, so an absolute
+# host path (/home/.../adapters/...) would not exist there and vLLM's
+# init_static_loras would fail with LoRAAdapterNotFoundError.
+ln -sfn "$ADAPTER_NAME" "$ADAPTER_DIR/current"
 CANDIDATE_LINKED=1
 log "Symlink: adapters/current → $ADAPTER_NAME (candidate, under gate)"
 
@@ -510,8 +517,9 @@ log "PASS: gate accepted $ADAPTER_NAME — promoting."
 # Record the prior promoted adapter as `previous` so cleanup never deletes
 # the rollback target, and so a future failed run has a lineage to restore.
 if [ -n "$PREV_TARGET" ] && [ -e "$PREV_TARGET" ]; then
-    ln -sfn "$PREV_TARGET" "$ADAPTER_DIR/previous"
-    log "Symlink: adapters/previous → $PREV_TARGET (rollback lineage)"
+    # RELATIVE link (basename only) — same container-path reason as `current`.
+    ln -sfn "$(basename "$PREV_TARGET")" "$ADAPTER_DIR/previous"
+    log "Symlink: adapters/previous → $(basename "$PREV_TARGET") (rollback lineage)"
 fi
 
 # Mark exactly the trained record IDs consumed, so they stop counting as

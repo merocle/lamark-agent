@@ -40,9 +40,19 @@ def test_rollback_trap_and_handler_present(src):
     assert "trap on_exit EXIT" in src
     assert "on_exit()" in src
     assert "restore_previous()" in src
-    # The trap restores the captured previous target (symlink), not just a
-    # server restart.
-    assert 'ln -sfn "$PREV_TARGET" "$ADAPTER_DIR/current"' in src
+    # The trap restores the previous target by relinking current.
+    assert 'ln -sfn "$(basename "$PREV_TARGET")" "$ADAPTER_DIR/current"' in src
+
+
+def test_symlinks_are_relative_not_absolute(src):
+    """adapters/current is read INSIDE the vLLM container at
+    /lamark/adapters/current; an absolute host-path symlink dangles there and
+    vLLM fails with LoRAAdapterNotFoundError. All links must be basenames."""
+    # Candidate link uses the bare basename, never the absolute $ADAPTER_DIR path.
+    assert 'ln -sfn "$ADAPTER_NAME" "$ADAPTER_DIR/current"' in src
+    assert 'ln -sfn "$ADAPTER_DIR/$ADAPTER_NAME"' not in src
+    # Previous + rollback links go through basename, never a raw absolute path.
+    assert 'ln -sfn "$PREV_TARGET"' not in src
 
 
 def test_candidate_linked_before_serving_for_gate(src):
@@ -72,7 +82,7 @@ def test_threshold_uses_new_pair_count(src):
 
 
 def test_previous_symlink_maintained_for_rollback_lineage(src):
-    assert 'ln -sfn "$PREV_TARGET" "$ADAPTER_DIR/previous"' in src
+    assert 'ln -sfn "$(basename "$PREV_TARGET")" "$ADAPTER_DIR/previous"' in src
 
 
 def test_cleanup_excludes_live_and_previous_targets(src):
