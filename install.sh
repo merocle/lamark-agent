@@ -2,7 +2,7 @@
 # Lamark — alpha installer.
 #
 # One-command install for new users:
-#     curl -fsSL https://raw.githubusercontent.com/Merocle/lamark-agent/main/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/merocle/lamark-agent/main/install.sh | bash
 #
 # After this finishes:
 #     lamark setup        # interactive wizard (Local / Existing endpoint / Cloud-first)
@@ -17,7 +17,7 @@
 # Environment overrides (mostly for development / testing):
 #   LAMARK_HOME          where runtime state lives (default ~/.lamark)
 #   LAMARK_REPO          where the repo gets cloned (default ~/lamark-agent)
-#   LAMARK_REPO_URL      git URL to clone (default github.com/Merocle/lamark-agent)
+#   LAMARK_REPO_URL      git URL to clone (default github.com/merocle/lamark-agent)
 #   LAMARK_REPO_REF      branch/tag/sha to checkout (default main)
 #   LAMARK_INSTALL_VERBOSE=1   stream subprocess output
 #   LAMARK_INSTALL_DRY_RUN=1   print steps without executing
@@ -29,7 +29,7 @@ set -euo pipefail
 # ============================================================
 LAMARK_HOME="${LAMARK_HOME:-$HOME/.lamark}"
 LAMARK_REPO="${LAMARK_REPO:-$HOME/lamark-agent}"
-LAMARK_REPO_URL="${LAMARK_REPO_URL:-https://github.com/Merocle/lamark-agent.git}"
+LAMARK_REPO_URL="${LAMARK_REPO_URL:-https://github.com/merocle/lamark-agent.git}"
 LAMARK_REPO_REF="${LAMARK_REPO_REF:-main}"
 LAMARK_INSTALL_VERBOSE="${LAMARK_INSTALL_VERBOSE:-0}"
 LAMARK_INSTALL_DRY_RUN="${LAMARK_INSTALL_DRY_RUN:-0}"

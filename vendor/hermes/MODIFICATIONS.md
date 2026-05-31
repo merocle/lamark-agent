@@ -62,7 +62,12 @@ File: `tools/ask_cloud_tool.py` (new).
 Lets the local model delegate a hard query to a cloud model via the user's
 LiteLLM proxy. Flow: A.3 redaction (hard-fail on secrets) → Telegram approval
 card (A.12) → POST to LiteLLM → audit log `$LAMARK_HOME/cloud_calls.jsonl`.
-Curated model list; auto-disabled when `LITELLM_API_KEY` is unset.
+Curated model list; auto-disabled unless BOTH `LITELLM_API_KEY` and
+`LITELLM_BASE_URL` are set (no proxy host is baked in — a hardcoded default
+would risk routing redacted prompts to an unintended host). Redaction on the
+egress path fails **closed**: any pipeline error aborts the call rather than
+shipping unredacted text (only a genuine `ImportError`, i.e. running outside
+the venv, passes through).
 Note: does NOT send a `temperature` param (gpt-5/o-series reject non-default).
 
 ### A.11 — Register ask_cloud + train_now toolsets

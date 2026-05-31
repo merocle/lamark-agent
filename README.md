@@ -47,7 +47,7 @@ logs every call. The default is, and stays, local.
 > for the `gh repo clone` / PAT / tarball install paths.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Merocle/lamark-agent/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/merocle/lamark-agent/main/install.sh | bash
 
 # After install:
 lamark setup        # interactive wizard (3 branches: Local / Existing endpoint / Cloud-first)
@@ -89,8 +89,10 @@ than the model's self-confidence. Every incoming message is triaged
 (cheap regex → local-LLM classifier) before the agent answers:
 
 - **Factual** ("when was X born", "what is Y") → a `web_search` is run and
-  injected as grounding; the model answers **only from the results**, never
-  from its weights. This is the anti-confabulation guarantee.
+  injected as grounding; the model is instructed to answer **only from the
+  results**, never from its weights. This is the anti-confabulation mechanism
+  (a strong prompt-level bias, enforced by the model's compliance — not a
+  hard decode constraint).
 - **Hard reasoning** (research-level proofs/derivations, deep expertise)
   → the model is directed to call `ask_cloud`, which delegates to a stronger
   cloud model (Claude / GPT / Gemini) through your LiteLLM proxy. You
@@ -307,7 +309,7 @@ disk-encryption layer, that's enough for now.
 - ✅ Unified `lamark` CLI (setup / chat / serve / status / switch-base / config / train / logs)
 - ✅ L1 identity via chat_template, verified portable across vLLM versions
 - ✅ L2 cross-session memory via Hermes
-- ✅ Upstream `vllm/vllm-openai:v0.21.0`, FP8 quant (~52 tok/s on Spark)
+- ✅ Upstream `vllm/vllm-openai:v0.21.0`, FP8 quant (~48 tok/s avg on Spark, peaks ~53)
 - ✅ Auto pair-capture from Telegram + nightly LoRA trainer (systemd timer,
   user-tunable schedule, Telegram notifications on promote/reject)
 - ✅ Local-model curation before training (debug-noise drop + synthetic decay)

@@ -16,7 +16,7 @@ paths in increasing UX cost.
 If the tester has `gh` installed and is logged in:
 
 ```bash
-gh repo clone Merocle/lamark-agent ~/lamark-agent
+gh repo clone merocle/lamark-agent ~/lamark-agent
 bash ~/lamark-agent/install.sh
 ```
 
@@ -31,7 +31,7 @@ normally.
 If the tester has only `git` and a GitHub PAT (classic, `repo` scope):
 
 ```bash
-git clone https://<USER>:<PAT>@github.com/Merocle/lamark-agent.git ~/lamark-agent
+git clone https://<USER>:<PAT>@github.com/merocle/lamark-agent.git ~/lamark-agent
 bash ~/lamark-agent/install.sh
 ```
 
@@ -40,7 +40,7 @@ sanitize it later with:
 
 ```bash
 cd ~/lamark-agent
-git remote set-url origin https://github.com/Merocle/lamark-agent.git
+git remote set-url origin https://github.com/merocle/lamark-agent.git
 ```
 
 ## Path C — author distributes a tarball
@@ -51,7 +51,7 @@ ship them a tarball:
 ```bash
 # On the author's machine:
 gh release download v0.1.0-alpha.0 \
-    --repo Merocle/lamark-agent \
+    --repo merocle/lamark-agent \
     --archive=tar.gz \
     --output lamark-agent.tar.gz
 

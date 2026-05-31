@@ -196,7 +196,7 @@ print('true' if (e and getattr(e, 'tested', False)) else 'false')
             warn "Model '$MODEL_NAME' is marked experimental (untested on real hardware)."
             warn "This is Phase 1 alpha: only the DGX Spark / tier-S path has been verified."
             warn "On consumer GPUs (4090/3090/Mac) you may hit Spark-specific quirks."
-            warn "Report issues at github.com/Merocle/lamark-agent/issues."
+            warn "Report issues at github.com/merocle/lamark-agent/issues."
             echo ""
             read -rp "Continue with experimental model? [y/N] " AGREE
             AGREE="${AGREE:-n}"

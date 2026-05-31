@@ -36,6 +36,6 @@ RUN python -c "import vllm; print(f'vllm {vllm.__version__} ok')"
 # Provide a quick `--version` for the image itself
 LABEL org.opencontainers.image.title="lamark-vllm" \
       org.opencontainers.image.description="vLLM + FT stack on NGC PyTorch for DGX Spark sm_121" \
-      org.opencontainers.image.source="https://github.com/lamark-agent/lamark-agent"
+      org.opencontainers.image.source="https://github.com/merocle/lamark-agent"
 
 WORKDIR /workspace

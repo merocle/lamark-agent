@@ -7,7 +7,51 @@ understanding that until 1.0.0 the alpha/beta tags can move.
 
 ## [Unreleased]
 
-Nothing committed since v0.1.0-alpha.0.
+Substantial work since `v0.1.0-alpha.0`. The authoritative vendor-patch list
+is [`vendor/hermes/MODIFICATIONS.md`](vendor/hermes/MODIFICATIONS.md)
+(A.2–A.4, A.7–A.14).
+
+### Added
+
+- **Autonomous nightly self-training loop** — auto pair-capture from Telegram
+  (`LAMARK-PATCH A.9`) → local-model curation (regex pre-kill + LLM judge +
+  synthetic decay) → LoRA train → eval-gate → promote/reject → Telegram
+  notification. User-tunable schedule (`lamark train --schedule`).
+- **Question-intent triage** (`A.13`) — factual questions get mandatory
+  web-search grounding; genuinely-hard questions are escalated to the cloud.
+- **`ask_cloud`** (`A.10`–`A.12`) — privacy-preserving cloud escalation via a
+  user-supplied LiteLLM proxy, with a per-call Telegram approval card, PII
+  redaction before egress, and an audit log.
+- **`train_now`** (`A.14`) — on-demand retrain from chat with a downtime card.
+- **Gateway env injection** for macOS launchd (`A.7`) and Linux systemd (`A.8`).
+- **`consumed` ledger + `count_new_pairs`** — the nightly threshold counts
+  genuinely-new pairs; the training set stays cumulative.
+
+### Fixed
+
+- **Learning loop was silently broken** — every nightly adapter after the
+  first was auto-rejected because the eval-gate probed a model name vLLM
+  never served (404). Reworked to promote-then-verify-then-rollback: the
+  candidate is served under the `lamark` alias, gated, and rolled back via an
+  EXIT trap on any failure. Verified end-to-end on Spark (good→promoted,
+  failure→rolled-back). See `docs/2026-05-30-remediation-plan.md`.
+- **Adapter symlinks** are now relative basenames (absolute host paths dangled
+  inside the vLLM container → `LoRAAdapterNotFoundError`).
+- **`ask_cloud` security** — removed a hardcoded internal proxy default
+  (`LITELLM_BASE_URL` is now required); redaction fails **closed** on the
+  cloud-egress path instead of passing text through on error.
+- **Spark-only serving quirks** (`TORCH_CUDA_ARCH_LIST`, flash_attn purge) are
+  now gated on detected hardware so non-Spark CUDA GPUs aren't broken.
+- **eval-gate** — single-pass identity probe, temperature 0, and a safety
+  probe that no longer false-passes a compliant "saved your secret" reply.
+- **Observability** — `lamark train --status` and the Telegram cards show
+  new-vs-cumulative pairs and the per-probe gate verdict.
+
+### Docs / honesty
+
+- README throughput corrected to the measured ~48 tok/s avg (was a
+  cherry-picked ~52); the factual-grounding "guarantee" reworded to
+  "mechanism" (it is a prompt-level bias, not a hard constraint).
 
 ## [0.1.0-alpha.0] — 2026-05-25
 
@@ -120,5 +164,5 @@ assessment.
 - `docs/hermes-vs-lamark-analysis.md` — early-session architecture analysis
   with bilingual quotes; archival, not load-bearing for v0.1.
 
-[Unreleased]: https://github.com/Merocle/lamark-agent/compare/v0.1.0-alpha.0...HEAD
-[0.1.0-alpha.0]: https://github.com/Merocle/lamark-agent/releases/tag/v0.1.0-alpha.0
+[Unreleased]: https://github.com/merocle/lamark-agent/compare/v0.1.0-alpha.0...HEAD
+[0.1.0-alpha.0]: https://github.com/merocle/lamark-agent/releases/tag/v0.1.0-alpha.0
