@@ -365,13 +365,9 @@ else
             return
         fi
         log "Downloading $repo (this may take 30-60 min on first run)..."
-        "$LAMARK_VENV/bin/python" -c "
-from huggingface_hub import snapshot_download
-snapshot_download(
-    repo_id='$repo',
-    local_dir=r'$local_dir',
-    max_workers=8,
-)
+        PYTHONPATH="$REPO_ROOT/src" "$LAMARK_VENV/bin/python" -c "
+from lamark.download import fetch_model
+fetch_model('$repo', r'$local_dir', max_workers=8)
 print('downloaded:', '$repo')
 "
         ok "Model $repo ready at $local_dir"

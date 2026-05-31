@@ -45,9 +45,9 @@ fi
 DOWNLOAD_DIR="$LAMARK_HOME/models/hf/$(echo "$HF_ID" | tr '/' '_')"
 if [ ! -f "$DOWNLOAD_DIR/config.json" ]; then
     echo "Downloading $HF_ID to $DOWNLOAD_DIR ..."
-    "$VENV_PY" -c "
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id='$HF_ID', local_dir=r'$DOWNLOAD_DIR', max_workers=8)
+    PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" -c "
+from lamark.download import fetch_model
+fetch_model('$HF_ID', r'$DOWNLOAD_DIR', max_workers=8)
 "
 fi
 
@@ -72,9 +72,9 @@ if [ -n "$SPEC_MODEL" ]; then
     SPEC_DIR="$LAMARK_HOME/models/hf/$(echo "$SPEC_MODEL" | tr '/' '_')"
     if [ ! -f "$SPEC_DIR/config.json" ]; then
         echo "Downloading speculative draft model $SPEC_MODEL ..."
-        "$VENV_PY" -c "
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id='$SPEC_MODEL', local_dir=r'$SPEC_DIR', max_workers=8)
+        PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" -c "
+from lamark.download import fetch_model
+fetch_model('$SPEC_MODEL', r'$SPEC_DIR', max_workers=8)
 "
     else
         echo "Draft model $SPEC_MODEL already on disk."

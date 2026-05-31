@@ -215,9 +215,9 @@ print(get_model('$MODEL_NAME').hf_id)
             note "Model already on disk at $DOWNLOAD_DIR — skipping download."
         else
             note "Downloading $HF_ID (this can take 15-60 minutes depending on size + network)..."
-            "$VENV_PY" -c "
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id='$HF_ID', local_dir=r'$DOWNLOAD_DIR', max_workers=8)
+            PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" -c "
+from lamark.download import fetch_model
+fetch_model('$HF_ID', r'$DOWNLOAD_DIR', max_workers=8)
 "
         fi
 
@@ -274,9 +274,9 @@ print(get_model('$RECOMMENDED_MODEL').hf_id)
             note "Kicking off background download of $HF_ID → $DOWNLOAD_DIR"
             note "(check progress: \`lamark status\` or \`lamark logs download\`)"
             mkdir -p "$LAMARK_HOME/logs"
-            nohup "$VENV_PY" -c "
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id='$HF_ID', local_dir=r'$DOWNLOAD_DIR', max_workers=4)
+            PYTHONPATH="$LAMARK_REPO/src" nohup "$VENV_PY" -c "
+from lamark.download import fetch_model
+fetch_model('$HF_ID', r'$DOWNLOAD_DIR', max_workers=4)
 " >"$LAMARK_HOME/logs/download.log" 2>&1 &
             echo "$!" > "$LAMARK_HOME/download.pid"
         fi
