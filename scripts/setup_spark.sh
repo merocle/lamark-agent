@@ -302,24 +302,14 @@ chmod +x "$REPO_ROOT/scripts/lamark-nightly-train.sh" 2>/dev/null || true
 if [ "${SKIP_TIMER:-0}" -eq 1 ]; then
     warn "Skipping nightly retrain timer install (SKIP_TIMER=1)"
 elif command -v systemctl >/dev/null 2>&1; then
-    USER_NAME="${SUDO_USER:-$USER}"
-    SYSTEMD_DIR="/etc/systemd/system"
-    SERVICE_SRC="$REPO_ROOT/scripts/systemd/lamark-nightly.service"
-    TIMER_SRC="$REPO_ROOT/scripts/systemd/lamark-nightly.timer"
-
-    if [ -w "$SYSTEMD_DIR" ] || sudo -n true 2>/dev/null; then
-        SVC_UNIT="$SYSTEMD_DIR/lamark-nightly@${USER_NAME}.service"
-        TIMER_UNIT="$SYSTEMD_DIR/lamark-nightly@${USER_NAME}.timer"
-
-        # Materialize templated units (% i -> actual username).
-        sed "s/%i/${USER_NAME}/g" "$SERVICE_SRC" | sudo tee "$SVC_UNIT"   >/dev/null
-        sed "s/%i/${USER_NAME}/g" "$TIMER_SRC"   | sudo tee "$TIMER_UNIT" >/dev/null
-        sudo systemctl daemon-reload
-        sudo systemctl enable "lamark-nightly@${USER_NAME}.timer" >/dev/null 2>&1 || true
-        sudo systemctl start  "lamark-nightly@${USER_NAME}.timer" >/dev/null 2>&1 || true
-        ok "Nightly retrain timer installed (lamark-nightly@${USER_NAME}.timer)"
+    # USER-scope timer (no sudo) via the same path as `lamark train
+    # --schedule` — writes ~/.config/systemd/user units and enables lingering.
+    SPEC="${LAMARK_SCHEDULE:-*-*-* 03:00:00}"
+    if LAMARK_REPO="$REPO_ROOT" "$REPO_ROOT/scripts/cmd/train.sh" --schedule "$SPEC" >/dev/null 2>&1; then
+        ok "Nightly retrain timer installed (user-scope, no sudo): $SPEC"
     else
-        warn "No sudo; copy scripts/systemd/lamark-nightly.{service,timer} to ~/.config/systemd/user/ manually."
+        warn "Could not enable the user-scope timer. Set it with:"
+        warn "  lamark train --schedule \"$SPEC\""
     fi
 else
     warn "systemctl not found; nightly timer not installed."

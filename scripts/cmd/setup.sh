@@ -347,25 +347,22 @@ cfg['training']['min_pairs'] = int('$TMIN')
 p.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
 "
 
-# Install systemd timer if frequency != manual and we have sudo
+# Install the nightly timer (USER-scope — no sudo). Same mechanism as
+# `lamark train --schedule`, which writes ~/.config/systemd/user units and
+# enables lingering so the timer survives logout. This removes the old sudo
+# cliff where a non-root install silently dropped the nightly feature.
 if [ "$TRAIN_FREQ" != "manual" ]; then
     chmod +x "$LAMARK_REPO/scripts/lamark-nightly-train.sh" 2>/dev/null || true
-    if command -v systemctl >/dev/null 2>&1 && (sudo -n true 2>/dev/null); then
-        USER_NAME="${SUDO_USER:-$USER}"
-        SYS_DIR="/etc/systemd/system"
-        SVC="$SYS_DIR/lamark-nightly@${USER_NAME}.service"
-        TMR="$SYS_DIR/lamark-nightly@${USER_NAME}.timer"
-
-        sed "s/%i/${USER_NAME}/g" "$LAMARK_REPO/scripts/systemd/lamark-nightly.service" | sudo tee "$SVC" >/dev/null
-        # Override OnCalendar per chosen frequency
-        sed "s/%i/${USER_NAME}/g; s|^OnCalendar=.*|OnCalendar=${SYSTEMD_CAL}|" \
-            "$LAMARK_REPO/scripts/systemd/lamark-nightly.timer" | sudo tee "$TMR" >/dev/null
-        sudo systemctl daemon-reload
-        sudo systemctl enable --now "lamark-nightly@${USER_NAME}.timer" >/dev/null 2>&1 || true
-        note "Systemd timer enabled: $SYSTEMD_CAL"
+    if command -v systemctl >/dev/null 2>&1; then
+        if LAMARK_REPO="$LAMARK_REPO" LAMARK_HOME="$LAMARK_HOME" HERMES_HOME="$HERMES_HOME" \
+           "$LAMARK_REPO/scripts/cmd/train.sh" --schedule "$SYSTEMD_CAL" >/dev/null 2>&1; then
+            note "Nightly timer enabled (user-scope, no sudo): $SYSTEMD_CAL"
+        else
+            warn "Could not enable the user-scope timer automatically. Set it with:"
+            warn "  lamark train --schedule \"$SYSTEMD_CAL\""
+        fi
     else
-        warn "No sudo or no systemctl — timer not installed. Run \`lamark train --now\` manually,"
-        warn "or copy scripts/systemd/lamark-nightly.* to ~/.config/systemd/user/ yourself."
+        warn "systemctl not found — timer not installed. Run \`lamark train --now\` manually."
     fi
 fi
 fi   # end SKIP_TRAINING_TRIGGER

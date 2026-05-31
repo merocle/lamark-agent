@@ -78,13 +78,18 @@ if [ -f "$LAMARK_HOME/download.pid" ]; then
     fi
 fi
 
-# 6) Nightly retrain timer (systemd)
+# 6) Nightly retrain timer (systemd). Canonical timer is the user-scope
+# `lamark-trainer.timer` (installed by `lamark train --schedule` / setup);
+# the legacy system-scope `lamark-nightly@USER` is still recognised.
 USER_NAME="${SUDO_USER:-$USER}"
-if systemctl list-timers --all 2>/dev/null | grep -q "lamark-nightly@${USER_NAME}"; then
+if systemctl --user list-timers --all 2>/dev/null | grep -q "lamark-trainer.timer"; then
+    NEXT=$(systemctl --user list-timers lamark-trainer.timer --no-pager --no-legend 2>/dev/null | awk '{print $1, $2}')
+    ok "Nightly retrain timer (user): next at $NEXT"
+elif systemctl list-timers --all 2>/dev/null | grep -q "lamark-nightly@${USER_NAME}"; then
     NEXT=$(systemctl list-timers "lamark-nightly@${USER_NAME}.timer" --no-pager --no-legend 2>/dev/null | awk '{print $1, $2}')
-    ok "Nightly retrain timer: next at $NEXT"
+    ok "Nightly retrain timer (system, legacy): next at $NEXT"
 else
-    warn "Nightly retrain timer not installed."
+    warn "Nightly retrain timer not installed. Enable with: lamark train --schedule \"*-*-* 03:00:00\""
 fi
 
 # 7) Last training log

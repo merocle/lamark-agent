@@ -183,6 +183,22 @@ EOF
 
     systemctl --user daemon-reload
     systemctl --user enable --now lamark-trainer.timer 2>&1 | tail -3
+
+    # Enable lingering so the user-scope timer keeps firing after logout
+    # (headless servers). Best-effort and sudo-free where possible: enabling
+    # linger for your OWN user is usually permitted via polkit; fall back to
+    # `sudo -n`, then to a note. This is what removes the old sudo cliff —
+    # no root needed for a persistent nightly timer.
+    if ! loginctl show-user "$(id -un)" --property=Linger 2>/dev/null | grep -q 'Linger=yes'; then
+        if loginctl enable-linger "$(id -un)" 2>/dev/null \
+           || sudo -n loginctl enable-linger "$(id -un)" 2>/dev/null; then
+            ok "Lingering enabled — timer survives logout."
+        else
+            warn "Could not enable lingering; the timer may pause after logout."
+            warn "  Run once: sudo loginctl enable-linger $(id -un)"
+        fi
+    fi
+
     ok "Schedule set: $spec"
     systemctl --user list-timers lamark-trainer.timer --no-pager 2>/dev/null | head -3
 }
