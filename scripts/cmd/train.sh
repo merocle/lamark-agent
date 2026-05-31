@@ -48,12 +48,13 @@ except Exception as e:
     # count if curation isn't importable here.
     if [ -d "$LAMARK_HOME/archive/incoming" ]; then
         local newpairs
-        newpairs=$(PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" - <<'PY' 2>/dev/null
+        newpairs=$(LAMARK_HOME="$LAMARK_HOME" PYTHONPATH="$LAMARK_REPO/src" "$VENV_PY" - <<'PY' 2>/dev/null
 import os
 try:
     from lamark.archive import Archive
     from lamark.train.curation import count_new_pairs
-    print(count_new_pairs(Archive.open(os.path.join(os.environ["LAMARK_HOME"], "archive"))))
+    home = os.environ.get("LAMARK_HOME") or os.path.expanduser("~/.lamark")
+    print(count_new_pairs(Archive.open(os.path.join(home, "archive"))))
 except Exception:
     print("?")
 PY
