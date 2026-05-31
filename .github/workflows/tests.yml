@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (core + dev only)
+        # The unit suite is Spark-independent and needs only the thin core
+        # plus dev tools — the heavy ML/vector/redaction extras are not
+        # required (tests monkeypatch the model/HTTP layers).
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Lint (advisory)
+        # Non-blocking until the codebase has had a ruff sweep. Surfaces
+        # findings without gating the build.
+        continue-on-error: true
+        run: ruff check src tests
