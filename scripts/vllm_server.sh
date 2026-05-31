@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# DEPRECATED — not the supported serving path.
+#
+# Canonical serving is `lamark serve` (scripts/cmd/serve.sh), which runs the
+# upstream multi-arch `vllm/vllm-openai:v0.21.0` image with hardware-gated
+# flags. This script predates that: it serves via the Spark-native
+# `lamark/vllm:25.10` (a TRAINING image) and has no hardware gating. Kept only
+# as a manual fallback / smoke harness (scripts/smoke_test_via_server.py).
+# Do not extend it — use serve.sh.
+#
 # Lamark — start vLLM serving Qwen3.6-35B-A3B inside the NGC container.
 #
 # Per feasibility-report-v3.md §4 and Kreuzhofer's recipe in the user-supplied

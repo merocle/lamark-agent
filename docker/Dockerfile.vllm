@@ -1,30 +1,30 @@
-# Lamark vLLM serving image.
+# Lamark FINE-TUNE / training image (Spark-native, aarch64 / GB10 sm_121).
 #
 # Built on NGC PyTorch (which has working torch+CUDA for GB10 sm_121 on aarch64,
-# something upstream pip wheels don't currently provide). We add vLLM and the
-# fine-tune toolchain on top so the same image runs both inference and Phase 2
-# LoRA training.
+# something upstream pip wheels don't currently provide). This image carries
+# the fine-tune toolchain (transformers/peft/trl/accelerate) that the nightly
+# trainer needs — the dispatcher runs INSIDE this image.
+#
+# NOTE: serving is NOT this image. `lamark serve` runs the upstream
+# `vllm/vllm-openai:v0.21.0` image (multi-arch, canonical). This image exists
+# for TRAINING. The legacy `scripts/vllm_server.sh` (deprecated) also used it.
 #
 # Build:
 #   docker build -f docker/Dockerfile.vllm -t lamark/vllm:25.10 .
-#
-# Run via scripts/vllm_server.sh — it expects this tag.
 
 FROM nvcr.io/nvidia/pytorch:25.10-py3
 
-# vLLM is the inference engine; transformers/peft/trl/accelerate the FT stack;
-# unsloth is the MoE fine-tune kernel path (per Kreuzhofer doc).
-#
-# Versions intentionally unpinned at the minor level inside the image so an
-# image rebuild picks up new vLLM releases compatible with the base torch.
-# The pip resolver inside the container will reject anything that conflicts
-# with the pre-installed torch.
+# vLLM + the fine-tune stack. Pinned to the EXACT versions the working
+# lamark/vllm:25.10 image resolved to, so a rebuild is reproducible (the
+# readiness review flagged the old unpinned ranges as a rebuild hazard —
+# note transformers is 5.x here, so the old "<5" caps elsewhere were wrong).
+# torch is NOT pip-installed: it comes from the NGC base image.
 RUN pip install --no-cache-dir \
-        "vllm>=0.7" \
-        "transformers>=4.45" \
-        "accelerate>=0.34" \
-        "peft>=0.13" \
-        "trl>=0.11" \
+        "vllm==0.21.0" \
+        "transformers==5.9.0" \
+        "accelerate==1.13.0" \
+        "peft==0.19.1" \
+        "trl==1.4.0" \
         "hf_transfer>=0.1.8" \
         "sentencepiece>=0.2" \
         "huggingface_hub>=0.25"

@@ -109,6 +109,15 @@ EOF
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
+# ---- LEGACY native ML install ---------------------------------------------
+# NOTE: the canonical ML paths are CONTAINERS, not this host env:
+#   - serving  → `lamark serve` runs vllm/vllm-openai:v0.21.0
+#   - training → the nightly trainer runs lamark/vllm:25.10 (docker/Dockerfile.vllm)
+# The host venv is intentionally thin/CPU-only (aarch64 torch wheels are
+# unreliable). The native installs below are a legacy fallback and are NOT
+# version-aligned with the containers (e.g. the "<5" transformers cap predates
+# the move to transformers 5.x). Prefer the containers; don't rely on this.
+#
 # ---- pytorch (must match CUDA 13.x) ---------------------------------------
 if ! python -c "import torch" 2>/dev/null; then
     log "Installing torch from $TORCH_INDEX_URL"
