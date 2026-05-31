@@ -1,6 +1,6 @@
 {
   "timestamp": "2026-05-23T19:11:35Z",
-  "hostname": "spark-01",
+  "hostname": "spark",
   "endpoint": "http://127.0.0.1:8000/v1",
   "model": "/workspace/models/hf/Qwen_Qwen3.6-35B-A3B",
   "passed": true,

@@ -1,7 +1,7 @@
 # Lamark vLLM benchmark — stage1-flags
 
 - date: 2026-05-27 15:57:03
-- endpoint: http://172.29.6.189:8000/v1
+- endpoint: http://localhost:8000/v1
 - model: qwen-base
 - model root: /lamark/models/hf/Qwen_Qwen3.6-35B-A3B
 - max_model_len: 131072

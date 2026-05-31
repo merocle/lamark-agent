@@ -263,11 +263,11 @@ rejection streak. A user must be able to tell "data not good enough" from
 ## Phase P3 — Publication blockers (flip to public)
 
 ### P3-1 — scrub internal infra URL (security CRITICAL)
-`vendor/hermes/tools/ask_cloud_tool.py:42` hardcodes
-`DEFAULT_BASE_URL = "https://litellm.labs.jb.gg/v1"` (internal JetBrains
-host), repeated in the docstring at `:25`. It is the runtime default, so a
-public user with `LITELLM_API_KEY` set but no `LITELLM_BASE_URL` would
-POST (redacted) prompts to internal infra.
+`vendor/hermes/tools/ask_cloud_tool.py:42` hardcoded a `DEFAULT_BASE_URL`
+pointing at an internal LiteLLM proxy host (repeated in the docstring at
+`:25`). It was the runtime default, so a public user with `LITELLM_API_KEY`
+set but no `LITELLM_BASE_URL` would POST (redacted) prompts to that internal
+host.
 
 **Fix.** Set `DEFAULT_BASE_URL = None`; require an explicit
 `LITELLM_BASE_URL` and `tool_error` clearly if unset. Scrub the docstring
@@ -352,7 +352,7 @@ Recommended order: **P0 + P3-1 + P3-2 → P2 → P1 → remaining P3.**
 - **P1:** a documented clean-box install transcript ends with a working
   `lamark chat` for a non-owner; non-Spark serve does not purge flash-attn
   or force sm_121.
-- **P3:** no `jb.gg` in the tree; redaction fails closed on cloud egress;
+- **P3:** no internal proxy host in the tree; redaction fails closed on cloud egress;
   README claims match measured reality; canonical URLs resolve; CI runs on
   push.
 - **Global:** full test suite green locally (`pytest`); all new
@@ -584,7 +584,7 @@ load-bearing (distinguishes R2-f "correctly waiting" from a wiring bug).
 
 ## P0-spark live verification (2026-05-30) — PASSED
 
-Ran on spark-01 against the FP8-served Qwen3.6-35B-A3B. Both halves of the
+Ran on the Spark against the FP8-served Qwen3.6-35B-A3B. Both halves of the
 P0-spark acceptance are proven, and the live run surfaced two real bugs that
 no unit test caught (the whole reason this gate exists):
 

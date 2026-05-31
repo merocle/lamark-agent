@@ -42,7 +42,8 @@ def main() -> int:
                    help="What the model should now say at the end of the prompt")
     p.add_argument("--hparams", default="hparams/ROME/qwen2.5-7b.yaml", type=str,
                    help="Path to ROME hparams YAML (relative to EasyEdit root)")
-    p.add_argument("--easyedit-root", default="/home/jetbrains/EasyEdit", type=str)
+    p.add_argument("--easyedit-root", default=str(Path.home() / "EasyEdit"), type=str,
+                   help="Path to an EasyEdit checkout (override with --easyedit-root)")
     args = p.parse_args()
 
     sys.path.insert(0, args.easyedit_root)
