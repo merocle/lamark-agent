@@ -12,7 +12,7 @@
 #
 # All output goes to ~/.lamark/logs/nightly-train-<date>.log.
 # Designed to be invoked from a systemd timer or crontab line:
-#   0 3 * * *  /home/jetbrains/lamark-agent/scripts/lamark-nightly-train.sh
+#   0 3 * * *  $HOME/lamark-agent/scripts/lamark-nightly-train.sh
 set -euo pipefail
 
 LAMARK_HOME="${LAMARK_HOME:-$HOME/.lamark}"
@@ -223,7 +223,11 @@ restore_previous() {
             # RELATIVE link (basename only): adapters/current is read inside
             # the vLLM container at /lamark/adapters/current, where an
             # absolute host path would dangle. Relative resolves on both.
-            ln -sfn "$(basename "$PREV_TARGET")" "$ADAPTER_DIR/current"
+            # Guarded: this runs inside the EXIT trap, where `set -e` is still
+            # active — an unguarded failure here would abort the trap before
+            # the notify/offline path, reintroducing silent rollback.
+            ln -sfn "$(basename "$PREV_TARGET")" "$ADAPTER_DIR/current" \
+                || log "WARN: rollback symlink update failed"
             log "Rolled back: adapters/current → $(basename "$PREV_TARGET")"
         else
             # No usable previous adapter (first-ever run, or it was cleaned
@@ -474,7 +478,8 @@ log "Adapter saved: $ADAPTER_DIR/$ADAPTER_NAME"
 # resolved inside the container at /lamark/adapters/current, so an absolute
 # host path (/home/.../adapters/...) would not exist there and vLLM's
 # init_static_loras would fail with LoRAAdapterNotFoundError.
-ln -sfn "$ADAPTER_NAME" "$ADAPTER_DIR/current"
+ln -sfn "$ADAPTER_NAME" "$ADAPTER_DIR/current" \
+    || fail "could not link candidate into adapters/current"
 CANDIDATE_LINKED=1
 log "Symlink: adapters/current → $ADAPTER_NAME (candidate, under gate)"
 
@@ -531,7 +536,11 @@ log "PASS: gate accepted $ADAPTER_NAME — promoting."
 # the rollback target, and so a future failed run has a lineage to restore.
 if [ -n "$PREV_TARGET" ] && [ -e "$PREV_TARGET" ]; then
     # RELATIVE link (basename only) — same container-path reason as `current`.
-    ln -sfn "$(basename "$PREV_TARGET")" "$ADAPTER_DIR/previous"
+    # Guarded with `|| log`: this is cosmetic rollback-lineage bookkeeping on
+    # the PASS path (PROMOTED not yet set), so a failure must NOT abort under
+    # `set -e` and trip the trap into rolling back a gate-PASSED adapter.
+    ln -sfn "$(basename "$PREV_TARGET")" "$ADAPTER_DIR/previous" \
+        || log "WARN: previous-lineage link failed (non-fatal)"
     log "Symlink: adapters/previous → $(basename "$PREV_TARGET") (rollback lineage)"
 fi
 

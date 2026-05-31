@@ -158,9 +158,9 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=$LAMARK_REPO/scripts/lamark-nightly-train.sh
-EnvironmentFile=-%h/.lamark/hermes-home/.env
-EnvironmentFile=-%h/.lamark/hermes-home/env
-Environment="LAMARK_HOME=%h/.lamark"
+EnvironmentFile=-$LAMARK_HOME/hermes-home/.env
+EnvironmentFile=-$LAMARK_HOME/hermes-home/env
+Environment="LAMARK_HOME=$LAMARK_HOME"
 Environment="LAMARK_REPO=$LAMARK_REPO"
 StandardOutput=journal
 StandardError=journal
