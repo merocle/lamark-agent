@@ -7,8 +7,13 @@ understanding that until 1.0.0 the alpha/beta tags can move.
 
 ## [Unreleased]
 
-Substantial work since `v0.1.0-alpha.0`. The authoritative vendor-patch list
-is [`vendor/hermes/MODIFICATIONS.md`](vendor/hermes/MODIFICATIONS.md)
+_Nothing yet._
+
+## [0.1.0-alpha.1] — 2026-06-01
+
+Second alpha — the autonomous learning loop now actually works end-to-end,
+and the install path is verified on a clean machine. The authoritative
+vendor-patch list is [`vendor/hermes/MODIFICATIONS.md`](vendor/hermes/MODIFICATIONS.md)
 (A.2–A.4, A.7–A.14).
 
 ### Added
@@ -46,12 +51,31 @@ is [`vendor/hermes/MODIFICATIONS.md`](vendor/hermes/MODIFICATIONS.md)
   probe that no longer false-passes a compliant "saved your secret" reply.
 - **Observability** — `lamark train --status` and the Telegram cards show
   new-vs-cumulative pairs and the per-probe gate verdict.
+- **Resumable model download** — `snapshot_download` is wrapped with
+  retry + resume, so a network blip no longer restarts a multi-GB pull from
+  zero (resolves the alpha.0 "no download resumability" limitation).
+- **No more sudo cliff** — the nightly timer installs user-scope
+  (`systemctl --user`) with lingering, so it works without root (resolves the
+  alpha.0 "sudo dependency" limitation).
+- **`lamark status`** no longer crashes under `set -u` when `$USER` is
+  unbound (login-less shells / containers).
+
+### Verified
+
+- **Clean-room install** on a fresh `ubuntu:24.04` (no GPU): `install.sh`
+  exits 0, the agent loop (`from hermes_cli.main import main`) imports with
+  only the installer's dependency set, and `lamark status` exits 0. See
+  `docs/smoke-tests/clean-room-install.md`.
+- **Autonomous promote + rollback** on the Spark — a good adapter is promoted
+  and served; a failed run rolls back to the previous adapter and stays online.
 
 ### Docs / honesty
 
 - README throughput corrected to the measured ~48 tok/s avg (was a
   cherry-picked ~52); the factual-grounding "guarantee" reworded to
   "mechanism" (it is a prompt-level bias, not a hard constraint).
+- Scrubbed internal infrastructure (LAN IP, internal proxy host, machine
+  name, personal paths) from docs ahead of the public release.
 
 ## [0.1.0-alpha.0] — 2026-05-25
 
@@ -164,5 +188,6 @@ assessment.
 - `docs/hermes-vs-lamark-analysis.md` — early-session architecture analysis
   with bilingual quotes; archival, not load-bearing for v0.1.
 
-[Unreleased]: https://github.com/merocle/lamark-agent/compare/v0.1.0-alpha.0...HEAD
+[Unreleased]: https://github.com/merocle/lamark-agent/compare/v0.1.0-alpha.1...HEAD
+[0.1.0-alpha.1]: https://github.com/merocle/lamark-agent/compare/v0.1.0-alpha.0...v0.1.0-alpha.1
 [0.1.0-alpha.0]: https://github.com/merocle/lamark-agent/releases/tag/v0.1.0-alpha.0

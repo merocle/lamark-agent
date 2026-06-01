@@ -1,6 +1,6 @@
 [project]
 name = "lamark-agent"
-version = "0.1.0a0"
+version = "0.1.0a1"
 description = "Lamark — locally-hosted personal AI agent that learns from accumulated dialogue. Fork of Hermes Agent (Nous Research, MIT)."
 readme = "README.md"
 license = { file = "LICENSE" }
