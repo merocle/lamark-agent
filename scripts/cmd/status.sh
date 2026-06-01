@@ -81,7 +81,9 @@ fi
 # 6) Nightly retrain timer (systemd). Canonical timer is the user-scope
 # `lamark-trainer.timer` (installed by `lamark train --schedule` / setup);
 # the legacy system-scope `lamark-nightly@USER` is still recognised.
-USER_NAME="${SUDO_USER:-$USER}"
+# `id -un` always resolves; bare $USER is unbound under `set -u` in
+# login-less environments (containers, cron, some shells) and crashed status.
+USER_NAME="${SUDO_USER:-$(id -un)}"
 if systemctl --user list-timers --all 2>/dev/null | grep -q "lamark-trainer.timer"; then
     NEXT=$(systemctl --user list-timers lamark-trainer.timer --no-pager --no-legend 2>/dev/null | awk '{print $1, $2}')
     ok "Nightly retrain timer (user): next at $NEXT"
