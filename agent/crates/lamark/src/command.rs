@@ -1,0 +1,13 @@
+pub mod acp;
+pub mod agent;
+pub mod chat;
+pub mod config;
+pub mod doctor;
+pub mod exec;
+pub mod gateway;
+pub mod mcp;
+pub mod plugins;
+pub mod remote;
+pub mod skills;
+pub mod trace;
+pub mod webui;
