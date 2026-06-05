@@ -147,6 +147,9 @@ def main() -> int:
     modes: Counter[str] = Counter()
     for rec in af.read_jsonl(args.inp):
         rec = af.as_canonical(rec)
+        if not rec.get("tools"):   # only tool-aware rows yield tool-call preference pairs
+            dropped += 1
+            continue
         dec = _first_decision(rec.get("messages", []))
         if dec is None:
             dropped += 1
