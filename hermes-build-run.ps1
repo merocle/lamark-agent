@@ -1,5 +1,5 @@
-# Build & run Hermes Agent locally (no ghcr.io image)
-# Uses our own Dockerfile — builds the image from scratch
+# Build & run Hermes Agent locally
+# Uses our own Dockerfile — builds from scratch
 
 $ErrorActionPreference = "Stop"
 
