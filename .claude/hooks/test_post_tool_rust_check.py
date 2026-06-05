@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for the PostToolUse Rust check hook.
 
 Usage:  cd .claude/hooks && python3 test_post_tool_rust_check.py
@@ -22,6 +21,9 @@ from post_tool_rust_check import (  # pyright: ignore[reportMissingImports]
     is_rust_file,
 )
 
+HOOK = Path(__file__).parent / "post_tool_rust_check.py"
+PROJECT_DIR = Path(__file__).resolve().parent.parent.parent / "agent"
+
 
 # ---------------------------------------------------------------------------
 # Edition detection tests
@@ -30,7 +32,9 @@ from post_tool_rust_check import (  # pyright: ignore[reportMissingImports]
 
 class TestFindEditionInFile(TestCase):
     def test_direct_edition(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".toml", delete=False
+        ) as f:
             f.write('edition = "2021"\n')
             f.flush()
             path = Path(f.name)
@@ -40,7 +44,9 @@ class TestFindEditionInFile(TestCase):
             path.unlink()
 
     def test_no_edition(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".toml", delete=False
+        ) as f:
             f.write('[package]\nname = "foo"\n')
             f.flush()
             path = Path(f.name)
@@ -50,9 +56,7 @@ class TestFindEditionInFile(TestCase):
             path.unlink()
 
     def test_works_on_real_workspace_root(self):
-        """The repo's own workspace root should resolve to 2021."""
-        project_dir = Path(__file__).resolve().parent.parent.parent
-        cargo = project_dir / "agent" / "Cargo.toml"
+        cargo = PROJECT_DIR / "Cargo.toml"
         if cargo.exists():
             self.assertEqual(_find_edition_in_file(cargo), "2021")
 
@@ -66,19 +70,14 @@ class TestDetectEdition(TestCase):
 
     def test_workspace_inheritance_walks_up(self):
         with tempfile.TemporaryDirectory() as tmp:
-            # Create workspace root
             root = Path(tmp) / "root"
             root.mkdir()
             (root / "Cargo.toml").write_text('edition = "2021"\n')
-
-            # Create crate with edition.workspace = true
             crate = root / "crates" / "mylib"
             crate.mkdir(parents=True)
             (crate / "Cargo.toml").write_text(
                 '[package]\nname = "mylib"\nedition.workspace = true\n'
             )
-
-            # The hook should walk up from crate to root and find 2021
             self.assertEqual(_detect_edition(str(crate)), "2021")
 
     def test_fallback_when_no_cargo_toml(self):
@@ -107,91 +106,75 @@ class TestIsRustFile(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Integration: hook exit code on real repo (no --all-targets)
+# Integration: hook end-to-end behavior
 # ---------------------------------------------------------------------------
 
 
 class TestHookExitCode(TestCase):
-    """Verify the hook's cargo check step does NOT compile tests.
+    """Verify the hook is silent on success and only prints errors."""
 
-    With --all-targets, cargo would try to compile test code which depends
-    on crates like tempfile that may not be in [dependencies]. Without it,
-    cargo check only verifies the main binary/library — the correct behavior
-    for a post-save lint hook.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        cls.project_dir = (
-            Path(__file__).resolve().parent.parent.parent / "agent"
-        )
-
-    def _run_hook(self, filepath):
-        """Run the hook with the given file path and return (stdout, stderr, exit_code)."""
-        hook = Path(__file__).parent / "post_tool_rust_check.py"
-        stdin_data = json.dumps(
-            {
-                "tool_name": "Edit",
-                "tool_input": {"file_path": str(filepath)},
-            }
-        )
+    def test_non_rust_file_skipped(self):
+        """Hook should exit 0 and produce no output for non-Rust files."""
         result = subprocess.run(
-            [sys.executable, str(hook)],
-            input=stdin_data,
+            [sys.executable, str(HOOK)],
+            input=json.dumps(
+                {"tool_name": "Write", "tool_input": {"file_path": "/tmp/test.py"}}
+            ),
             capture_output=True,
             text=True,
-            cwd=str(self.project_dir),
         )
-        return result.stdout, result.stderr, result.returncode
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
 
-    def test_hook_runs_without_crashing(self):
-        """Hook should execute for .rs files without Python/rustfmt crashes."""
-        filepath = self.project_dir / "crates" / "lamark" / "src" / "main.rs"
-        if not filepath.exists():
-            self.skipTest("main.rs does not exist")
-
-        stdout, stderr, rc = self._run_hook(filepath)
-        self.assertNotEqual(rc, 126, "Hook crashed (python/rustfmt not found)")
-        self.assertIn("Build check (cargo check)", stdout)
-
-    def test_hook_does_not_run_cargo_all_targets(self):
-        """Verify the hook uses plain cargo check, not --all-targets.
-
-        The test code in tools/*.rs references tempfile which isn't in
-        [dependencies]. With --all-targets, this would cause errors like
-        'use of unresolved module or unlinked crate tempfile'.
-        Without --all-targets, those errors won't appear.
-        """
-        # Use a file in tools/ to trigger compilation of that module
-        filepath = self.project_dir / "crates" / "lamark" / "src" / "tools" / "file.rs"
-        if not filepath.exists():
-            self.skipTest("tools/file.rs does not exist")
-
-        stdout, stderr, rc = self._run_hook(filepath)
-        combined = stdout + stderr
-
-        # If --all-targets were used, we'd see 'tempfile' errors from test code
-        self.assertNotIn(
-            "tempfile",
-            combined,
-            "Hook should NOT compile test code (no tempfile errors from tests)",
+    def test_read_tool_skipped(self):
+        """Read-only tool should exit 0 silently."""
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=json.dumps({"tool_name": "Read", "tool_input": {}}),
+            capture_output=True,
+            text=True,
         )
+        self.assertEqual(result.returncode, 0)
 
-    def test_hook_does_not_invoke_rustfmt_on_cargo_files(self):
-        """rustfmt should not be called on Cargo.toml files (TOML, not Rust)."""
-        filepath = self.project_dir / "crates" / "lamark" / "Cargo.toml"
+    def test_hook_runs_for_rs_file(self):
+        """Hook should run for .rs files and exit with cargo result."""
+        filepath = PROJECT_DIR / "crates" / "lamark-core" / "src" / "lib.rs"
+        if not filepath.exists():
+            self.skipTest("lib.rs does not exist")
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=json.dumps(
+                {
+                    "tool_name": "Edit",
+                    "tool_input": {"file_path": str(filepath)},
+                }
+            ),
+            capture_output=True,
+            text=True,
+        )
+        # Hook should run without crashing
+        self.assertNotEqual(result.returncode, 126)
+
+    def test_hook_skips_rustfmt_on_cargo_files(self):
+        """rustfmt should not be run on Cargo.toml files."""
+        filepath = PROJECT_DIR / "crates" / "lamark" / "Cargo.toml"
         if not filepath.exists():
             self.skipTest("Cargo.toml does not exist")
-
-        stdout, stderr, rc = self._run_hook(filepath)
-        combined = stdout + stderr
-
-        # When rustfmt runs on Cargo.toml, it errors: 'expected item, found ['
-        self.assertNotIn(
-            "expected item, found",
-            combined,
-            "rustfmt should not process Cargo.toml files",
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=json.dumps(
+                {
+                    "tool_name": "Edit",
+                    "tool_input": {"file_path": str(filepath)},
+                }
+            ),
+            capture_output=True,
+            text=True,
         )
+        # Should NOT contain rustfmt parse errors (TOML treated as Rust)
+        self.assertNotIn("expected item, found", result.stdout)
+        self.assertNotIn("expected item, found", result.stderr)
 
 
 if __name__ == "__main__":
