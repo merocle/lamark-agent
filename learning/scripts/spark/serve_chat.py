@@ -40,7 +40,7 @@ tok = AutoTokenizer.from_pretrained(MODEL_LOCAL, trust_remote_code=True)
 if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 _model = AutoModelForCausalLM.from_pretrained(
-    MODEL_LOCAL, dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)
+    MODEL_LOCAL, dtype=torch.bfloat16, device_map={"": 0}, trust_remote_code=True)  # pin GPU0; "auto" CPU-offloads conv layers -> causal_conv1d crash
 _model = PeftModel.from_pretrained(_model, ADAPTER_DIR)
 _model.eval()
 _lock = threading.Lock()
@@ -54,8 +54,16 @@ def _prep(messages, enable_thinking):
     return {k: v.to(_model.device) for k, v in enc.items()}
 
 
+# Stop at the assistant turn boundary so the model doesn't hallucinate a
+# follow-up user/assistant turn (Qwen3.5's default eos is <|endoftext|>, not
+# <|im_end|>, so generation runs past the turn without this).
+_EOS_IDS = [i for i in {tok.eos_token_id, tok.convert_tokens_to_ids("<|im_end|>")}
+            if isinstance(i, int) and i >= 0]
+
+
 def _gen_kwargs(enc, max_tokens, temperature):
-    kw = dict(**enc, max_new_tokens=max_tokens, pad_token_id=tok.pad_token_id)
+    kw = dict(**enc, max_new_tokens=max_tokens, pad_token_id=tok.pad_token_id,
+              eos_token_id=_EOS_IDS)
     if temperature and temperature > 0:
         kw.update(do_sample=True, temperature=temperature)
     else:
