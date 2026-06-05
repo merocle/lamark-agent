@@ -30,10 +30,34 @@ pub struct Config {
     /// Maximum tool call iterations per turn.
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: usize,
+
+    /// Maximum number of tool calls per turn.
+    #[serde(default = "default_max_tool_calls")]
+    pub max_tool_calls: usize,
+
+    /// Maximum bytes per single tool result. Results exceeding this are truncated.
+    #[serde(default = "default_max_result_bytes")]
+    pub max_result_bytes: usize,
+
+    /// Timeout in milliseconds for each individual tool call.
+    #[serde(default = "default_tool_call_timeout_ms")]
+    pub tool_call_timeout_ms: u64,
 }
 
 fn default_max_tool_iterations() -> usize {
     5
+}
+
+fn default_max_tool_calls() -> usize {
+    50
+}
+
+fn default_max_result_bytes() -> usize {
+    200_000
+}
+
+fn default_tool_call_timeout_ms() -> u64 {
+    30_000
 }
 
 impl Default for Config {
@@ -47,6 +71,9 @@ impl Default for Config {
             project_dir: PathBuf::from("."),
             knowledge_base_url: None,
             max_tool_iterations: 5,
+            max_tool_calls: 50,
+            max_result_bytes: 200_000,
+            tool_call_timeout_ms: 30_000,
         }
     }
 }

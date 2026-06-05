@@ -24,4 +24,42 @@ impl SystemPrompt {
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+
+    /// Return the stable + context tiers as a cacheable prefix, plus volatile as separate part.
+    /// Everything before `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` can use API-level global caching.
+    /// Everything after must not be cached (session-specific).
+    pub fn render_split(&self) -> (String, String) {
+        let global_parts: Vec<&str> = [
+            if !self.stable.is_empty() {
+                Some(self.stable.trim())
+            } else {
+                None
+            },
+            if !self.context.is_empty() {
+                Some(self.context.trim())
+            } else {
+                None
+            },
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        let global = if global_parts.is_empty() {
+            String::new()
+        } else {
+            global_parts.join("\n\n\n")
+        };
+
+        let dynamic = if self.volatile.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\n__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__\n\n{}",
+                self.volatile.trim()
+            )
+        };
+
+        (global, dynamic)
+    }
 }

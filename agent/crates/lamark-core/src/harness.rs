@@ -115,4 +115,16 @@ impl HarnessStack for PassthroughHarness {
 pub trait ToolExecutor: Send + Sync {
     /// Execute a single tool call and return the result.
     async fn execute(&self, call: &ToolCall, ctx: &TurnContext<'_>) -> ToolResult;
+
+    /// Execute multiple tool calls concurrently and return results in original order.
+    ///
+    /// Default implementation is sequential (calls `execute` for each call).
+    /// Overriding implementations can run calls in parallel using task spawning.
+    async fn execute_batch(&self, calls: &[ToolCall], ctx: &TurnContext<'_>) -> Vec<ToolResult> {
+        let mut results = Vec::with_capacity(calls.len());
+        for call in calls {
+            results.push(self.execute(call, ctx).await);
+        }
+        results
+    }
 }

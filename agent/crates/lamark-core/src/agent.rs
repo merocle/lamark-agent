@@ -1,11 +1,18 @@
 //! Core agent orchestration for Lamark.
 
-use crate::harness::{HarnessStack, ToolExecutor};
+use crate::harness::{HarnessStack, RealizationDecision, RegulationOutput, ToolExecutor};
 use crate::prompt::SystemPrompt;
+use crate::sanitize;
 use crate::tool::{ToolDefinition, ToolResult};
 use crate::turn::{Conversation, Message, TurnContext};
 use crate::LLMClient;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock};
+
+/// Cache for context file reads (path → (mtime, content)).
+static CONTEXT_FILE_CACHE: LazyLock<std::sync::RwLock<HashMap<PathBuf, (u64, String)>>> =
+    LazyLock::new(std::sync::RwLock::default);
 
 /// The main orchestrator for an AI agent turn.
 pub struct AIAgent {
@@ -67,8 +74,9 @@ impl AIAgent {
             .await?;
         let mut tool_iter = 0usize;
 
-        // 4. Handle tool calls if any (max 2 iterations)
-        while !response.tool_calls.is_empty() && tool_iter < 2 {
+        // 4. Handle tool calls if any (iteration limit from config)
+        let max_iterations = config.max_tool_iterations.max(1);
+        while !response.tool_calls.is_empty() && tool_iter < max_iterations {
             tracing::debug!(
                 tool_count = response.tool_calls.len(),
                 "LLM response with tool calls"
@@ -85,7 +93,7 @@ impl AIAgent {
 
                 // Layer 3: Action Realization — validate then execute
                 match self.harness.realize_action(call, &ctx) {
-                    crate::harness::RealizationDecision::Exec => {
+                    RealizationDecision::Exec => {
                         let result = self.executor.execute(call, &ctx).await;
                         tool_results.push(result);
                     }
@@ -100,8 +108,19 @@ impl AIAgent {
                 conversation.add_message(Message::Tool(res.clone()));
                 let ctx = TurnContext::new(conversation, config.clone());
                 match self.harness.regulate_trajectory(&ctx, &res) {
-                    crate::harness::RegulationOutput::None => {}
-                    reg => {
+                    RegulationOutput::None => {}
+                    reg @ RegulationOutput::Hint { .. }
+                    | reg @ RegulationOutput::Warning { .. }
+                    | reg @ RegulationOutput::Directive { .. } => {
+                        if let RegulationOutput::Hint { message } = &reg {
+                            conversation.add_message(Message::System(format!("[HINT] {message}")));
+                        } else if let RegulationOutput::Warning { message } = &reg {
+                            conversation
+                                .add_message(Message::System(format!("[WARNING] {message}")));
+                        } else if let RegulationOutput::Directive { message } = &reg {
+                            conversation
+                                .add_message(Message::System(format!("[DIRECTIVE] {message}")));
+                        }
                         tracing::warn!("Harness regulation: {:?}", reg);
                     }
                 }
@@ -138,9 +157,10 @@ impl AIAgent {
     fn build_stable_tier(config: Arc<lamark_config::Config>, tools: &[ToolDefinition]) -> String {
         let mut parts: Vec<String> = Vec::new();
 
-        // 1. Identity (primary)
+        // 1. Identity (primary) — sanitize for injected characters
         if !config.agent.identity.is_empty() {
-            parts.push(config.agent.identity.clone());
+            let identity = sanitize::sanitize_for_prompt(&config.agent.identity);
+            parts.push(identity);
         }
 
         // 2. Mandatory tool-use directive
@@ -211,9 +231,60 @@ impl AIAgent {
                     let path = entry.path();
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if matches!(name, "AGENTS.md" | ".cursorrules" | "SOUL.md") && path.is_file() {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            if !content.trim().is_empty() {
-                                parts.push(format!("## {}\n{}", name, content.trim()));
+                        // Check cache (path → (mtime, content))
+                        let current_mtime = path
+                            .metadata()
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| {
+                                t.duration_since(std::time::UNIX_EPOCH)
+                                    .ok()
+                                    .map(|d| d.as_millis() as u64)
+                            });
+
+                        let content = if let Some((cached_mtime, cached_content)) =
+                            CONTEXT_FILE_CACHE
+                                .read()
+                                .ok()
+                                .and_then(|c| c.get(&path).cloned())
+                        {
+                            // Cache hit if mtime matches
+                            if let Some(file_mtime) = current_mtime {
+                                if cached_mtime == file_mtime {
+                                    Some(cached_content)
+                                } else {
+                                    None // mtime changed, re-read
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None // cache miss
+                        };
+
+                        let content = match content {
+                            Some(c) => c,
+                            None => match std::fs::read_to_string(&path) {
+                                Ok(c) => {
+                                    if let Some(file_mtime) = current_mtime {
+                                        if let Ok(mut cache) = CONTEXT_FILE_CACHE.write() {
+                                            cache.insert(path.clone(), (file_mtime, c.clone()));
+                                        }
+                                    }
+                                    c
+                                }
+                                Err(_) => continue,
+                            },
+                        };
+
+                        let trimmed = content.trim();
+                        if !trimmed.is_empty() {
+                            // Check for prompt injection
+                            if let Some(injection_msg) = sanitize::check_injection(trimmed) {
+                                parts.push(format!("## [BLOCKED: {}] {}", name, injection_msg));
+                            } else {
+                                let safe_content = sanitize::sanitize_for_prompt(trimmed);
+                                parts.push(format!("## {}\n{}", name, safe_content.trim()));
                             }
                         }
                     }

@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod harness;
 pub mod prompt;
+pub mod sanitize;
 pub mod tool;
 pub mod turn;
 

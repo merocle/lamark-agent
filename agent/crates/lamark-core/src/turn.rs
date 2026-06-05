@@ -47,4 +47,14 @@ impl<'a> TurnContext<'a> {
             config,
         }
     }
+
+    /// Construct a TurnContext with an empty conversation, for use in standalone dispatch.
+    pub fn new_owned(config: Arc<lamark_config::Config>) -> Self {
+        static EMPTY: std::sync::LazyLock<Conversation> =
+            std::sync::LazyLock::new(Conversation::default);
+        Self {
+            conversation: &EMPTY,
+            config,
+        }
+    }
 }
