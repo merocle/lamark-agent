@@ -12,6 +12,10 @@ exposes just enough of the OpenAI API for `chat_lamark.py`:
 
 Model names: "lamark" = base + adapter (default), "base" = adapter disabled.
 Honors `chat_template_kwargs.enable_thinking` (default False -> clean output).
+Passes a request's `tools` array into the chat template so the model can emit
+NATIVE tool calls (without this the prompt has no schemas and the model narrates
+`WebSearch(...)` as prose). On the non-streaming path the response separates
+`tool_calls`, `reasoning_content` (the <think> block), and clean `content`.
 Stdlib http only; generation is serialized with a lock (single-GPU, single-user).
 
 Env:
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,11 +52,38 @@ _lock = threading.Lock()
 print(f"[serve] ready on :{PORT}  (models: base, lamark)", flush=True)
 
 
-def _prep(messages, enable_thinking):
+def _prep(messages, enable_thinking, tools):
     enc = tok.apply_chat_template(
-        messages, add_generation_prompt=True, return_tensors="pt",
+        messages, tools=tools or None, add_generation_prompt=True, return_tensors="pt",
         return_dict=True, enable_thinking=enable_thinking)
     return {k: v.to(_model.device) for k, v in enc.items()}
+
+
+_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+
+
+def _parse_assistant(text):
+    """Split a raw assistant generation into (content, reasoning, tool_calls).
+
+    reasoning = the <think> block (returned separately, not left dangling in
+    content as the old serve did); tool_calls = parsed <tool_call> JSON in the
+    OpenAI shape so callers get a real tool call, not narrated prose."""
+    reasoning = None
+    if (m := _THINK_RE.search(text)):
+        reasoning = m.group(1).strip()
+        text = _THINK_RE.sub("", text)
+    calls = []
+    for raw in _CALL_RE.findall(text):
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        calls.append({"id": f"call_{len(calls) + 1}", "type": "function",
+                      "function": {"name": obj.get("name", "unknown"),
+                                   "arguments": json.dumps(obj.get("arguments", {}))}})
+    content = _CALL_RE.sub("", text).strip()
+    return content, reasoning, calls
 
 
 # Stop at the assistant turn boundary so the model doesn't hallucinate a
@@ -106,9 +138,10 @@ class Handler(BaseHTTPRequestHandler):
         temperature = float(req.get("temperature", 0.7))
         stream = bool(req.get("stream", False))
         enable_thinking = bool(req.get("chat_template_kwargs", {}).get("enable_thinking", False))
+        tools = req.get("tools")
         use_base = model == "base"
 
-        enc = _prep(messages, enable_thinking)
+        enc = _prep(messages, enable_thinking, tools)
 
         if stream:
             self.send_response(200)
@@ -149,13 +182,20 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     out = _model.generate(**_gen_kwargs(enc, max_tokens, temperature))
             text = tok.decode(out[0, enc["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+            content, reasoning, tool_calls = _parse_assistant(text)
+            message = {"role": "assistant", "content": content or None}
+            if reasoning:
+                message["reasoning_content"] = reasoning
+            if tool_calls:
+                message["tool_calls"] = tool_calls
             self._json(200, {
                 "id": "chatcmpl-lamark",
                 "object": "chat.completion",
                 "created": 0,
                 "model": model,
-                "choices": [{"index": 0, "finish_reason": "stop",
-                             "message": {"role": "assistant", "content": text}}],
+                "choices": [{"index": 0,
+                             "finish_reason": "tool_calls" if tool_calls else "stop",
+                             "message": message}],
             })
 
 

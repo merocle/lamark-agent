@@ -1,0 +1,40 @@
+# Hermes Agent CLI config — drive the fine-tuned LAMARK adapter through the real
+# Hermes agent harness (tool loop, prompt builder, ~70 tools) instead of a
+# hand-rolled REPL. The model is served by serve_chat.py (transformers-backed,
+# OpenAI-compatible) because vLLM can't load qwen3_5 yet.
+#
+# Mount this over the container's ~/.hermes/cli-config.yaml:
+#   # 1. serve the adapter on the Spark host (listens on :8765, model "lamark")
+#   ADAPTER_NAME=qwen3_5-9b-molf-lora-v2 learning/scripts/spark/serve_chat.sh start
+#   # 2. run the existing hermes-agent image against it (host network -> localhost)
+#   docker run --rm -it --network host \
+#       -e OPENAI_BASE_URL=http://localhost:8765/v1 -e OPENAI_API_KEY=sk-local \
+#       -v "$PWD/cli-config.lamark.yaml:/root/.hermes/cli-config.yaml" \
+#       -v "$PWD/workspace:/workspace" hermes-agent:latest hermes
+#
+# serve_chat.py returns native tool_calls + reasoning_content on the NON-streaming
+# path, which is what the harness consumes for tool turns.
+
+model:
+  # serve_chat serves model ids "lamark" (base+adapter) and "base" (adapter off).
+  default: "openai/lamark"
+  provider: "openai"
+  base_url: "http://localhost:8765/v1"
+  api_key: "sk-local"
+  context_length: 32768
+  max_tokens: 4096
+
+# Decoding — invariant 9: never greedy on Qwen3. Tool loops want thinking OFF.
+# tools:    temperature=0.7, top_p=0.8,  top_k=20
+# thinking: temperature=0.6, top_p=0.95, top_k=20
+params:
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20
+  chat_template_kwargs:
+    enable_thinking: false
+
+terminal:
+  backend: "local"
+  timeout: 180
+  lifetime_seconds: 300

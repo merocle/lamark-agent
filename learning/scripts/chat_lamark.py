@@ -28,8 +28,11 @@ import urllib.request
 
 URL   = os.environ.get("LAMARK_VLLM_URL", "http://10.212.212.1:8765/v1").rstrip("/")
 MODEL = os.environ.get("LAMARK_MODEL", "lamark")
-# Thinking (reasoning) mode. On by default; toggle in the REPL with /think on|off.
-THINK = os.environ.get("LAMARK_THINK", "1") == "1"
+# Thinking (reasoning) mode. OFF by default for clean answers (invariant 23);
+# toggle in the REPL with /think on|off. This is a lightweight PROSE check —
+# for agentic/tool-call testing, drive the model through the Hermes harness
+# (see cli-config.lamark.yaml), which runs the real tool loop.
+THINK = os.environ.get("LAMARK_THINK", "0") == "1"
 
 
 def healthcheck(base_url: str) -> str | None:

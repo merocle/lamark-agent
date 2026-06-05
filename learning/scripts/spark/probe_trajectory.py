@@ -6,10 +6,9 @@ Presents the adopt-v0.1 tools[] schema (from tools.yaml) plus a task that needs
 a tool, then prints the raw model output (special tokens kept) so we can see
 whether it produces a well-formed tool call and in what format.
 
-NOTE: the current adapter was trained on tool *knowledge* (facts/QA), not on
-tool-call *trajectories* — so this measures the base Qwen3.5-instruct tool-call
-ability carried through the adapter, and tells us whether trajectory training
-(R6) is needed.
+Presents the same tools[] schema the Hermes harness would, so this offline check
+mirrors what the agent loop sees. Decodes with sampling (invariant 9 — never
+greedy on Qwen3) at the tool-loop params (temp 0.7, top_p 0.8, top_k 20).
 
 Env: MODEL_LOCAL, ADAPTER_DIR, TOOLS_YAML (default /workspace/lamark/data/tools.yaml), MAX_NEW (200)
 """
@@ -56,7 +55,8 @@ for p in PROMPTS:
                                   return_dict=True, enable_thinking=False)
     enc = {k: v.to(m.device) for k, v in enc.items()}
     with torch.no_grad():
-        out = m.generate(**enc, max_new_tokens=MAX_NEW, do_sample=False,
+        out = m.generate(**enc, max_new_tokens=MAX_NEW, do_sample=True,
+                         temperature=0.7, top_p=0.8, top_k=20,
                          pad_token_id=tok.pad_token_id)
     text = tok.decode(out[0, enc["input_ids"].shape[1]:], skip_special_tokens=False)
     emitted = "tool_call" in text or any(t["function"]["name"] in text for t in tools)
