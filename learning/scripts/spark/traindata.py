@@ -46,14 +46,16 @@ def load_canonical(path: str) -> list[dict]:
     return rows
 
 
-def make_tokenize(tok, max_length: int, assistant_only: bool = True):
-    """Return a tokenize(row)->dict|None closure using the row's tools +
-    enable_thinking and assistant-only label masking."""
+def make_tokenize(tok, max_length: int, adapter, assistant_only: bool = True):
+    """Return a tokenize(row)->dict|None closure. `adapter` (model_template.
+    TemplateAdapter) renders the neutral messages to THIS model family's tokens
+    (Qwen <think> vs Gemma 4 channel) before templating — so one dataset trains
+    any model. Assistant-only label masking (invariant 12)."""
     def tokenize(row: dict) -> dict | None:
         enc = tok.apply_chat_template(
-            row["messages"], tools=row.get("tools"), tokenize=True, return_dict=True,
-            return_assistant_tokens_mask=True, truncation=True, max_length=max_length,
-            enable_thinking=row.get("enable_thinking", False))
+            adapter.to_messages(row["messages"]), tools=row.get("tools"), tokenize=True,
+            return_dict=True, return_assistant_tokens_mask=True, truncation=True,
+            max_length=max_length, **adapter.template_kwargs(row.get("enable_thinking", False)))
         ids = enc["input_ids"]
         masks = enc.get("assistant_masks")
         if assistant_only and masks and any(masks):

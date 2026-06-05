@@ -29,12 +29,16 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 import torch
 from datasets import Dataset
 from peft import LoraConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import DPOConfig, DPOTrainer
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/ for model_template
+from model_template import TemplateAdapter
 
 
 def _env(k: str) -> str:
@@ -63,31 +67,27 @@ if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 
 
-def render(prompt_msgs: list[dict], completion: list[dict], tools) -> tuple[str, str]:
-    """Render (prompt_string, completion_string) via the chat template with tools
-    baked in. The completion is the suffix the template adds for the assistant turn
-    — extracted so tool-call formatting matches exactly what the model emits."""
-    pstr = tok.apply_chat_template(prompt_msgs, tools=tools or None, tokenize=False,
-                                   add_generation_prompt=True, enable_thinking=False)
-    full = tok.apply_chat_template(prompt_msgs + completion, tools=tools or None, tokenize=False,
-                                   add_generation_prompt=False, enable_thinking=False)
-    cstr = full[len(pstr):] if full.startswith(pstr) else full
-    return pstr, cstr
+tmpl = TemplateAdapter.for_model(MODEL_LOCAL, os.environ.get("FAMILY"))
+print(f"[dpo] template family={tmpl.family}", flush=True)
 
 
 def load_pairs(path: str) -> Dataset:
+    """Conversational DPO: keep prompt/chosen/rejected as messages and let TRL
+    template them (one enable_thinking for prompt+completion → no prefix
+    fragility). The adapter inlines the neutral thinking field per family first;
+    tool_calls + tools stay structured for the chat template to render."""
     rows = []
     for line in open(path, encoding="utf-8"):
         line = line.strip()
         if not line:
             continue
         r = json.loads(line)
-        tools = r.get("tools")
-        pstr, chosen = render(r["prompt"], r["chosen"], tools)
-        _, rejected = render(r["prompt"], r["rejected"], tools)
-        if not chosen or not rejected or chosen == rejected:
-            continue
-        rows.append({"prompt": pstr, "chosen": chosen, "rejected": rejected})
+        row = {"prompt": tmpl.to_messages(r["prompt"]),
+               "chosen": tmpl.to_messages(r["chosen"]),
+               "rejected": tmpl.to_messages(r["rejected"])}
+        if r.get("tools"):
+            row["tools"] = r["tools"]
+        rows.append(row)
     return Dataset.from_list(rows)
 
 

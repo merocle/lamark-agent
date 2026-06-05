@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import torch
 from datasets import Dataset
@@ -32,6 +33,9 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           DataCollatorForSeq2Seq, Trainer, TrainingArguments)
 
 from traindata import count_steps, guard_steps, load_canonical, make_tokenize, pack
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/ for model_template
+from model_template import TemplateAdapter
 
 
 def _env(k: str) -> str:
@@ -76,7 +80,9 @@ if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 
 
-_tokenize = make_tokenize(tok, MAX_LENGTH, assistant_only=ASSISTANT_ONLY)
+adapter = TemplateAdapter.for_model(MODEL_LOCAL, os.environ.get("FAMILY"))
+print(f"[agentic] template family={adapter.family}", flush=True)
+_tokenize = make_tokenize(tok, MAX_LENGTH, adapter, assistant_only=ASSISTANT_ONLY)
 
 
 def build(path: str, extra: str = "", oversample: int = 1) -> Dataset:

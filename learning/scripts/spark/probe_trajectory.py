@@ -16,16 +16,22 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from pathlib import Path
 
 import torch
 import yaml
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/ for model_template
+from model_template import TemplateAdapter
+
 MODEL = os.environ["MODEL_LOCAL"]
 ADAPTER = os.environ["ADAPTER_DIR"]
 TOOLS_YAML = os.environ.get("TOOLS_YAML", "/workspace/lamark/data/tools.yaml")
 MAX_NEW = int(os.environ.get("MAX_NEW", "200"))
+_TMPL = TemplateAdapter.for_model(MODEL, os.environ.get("FAMILY"))
 
 cat = yaml.safe_load(open(TOOLS_YAML, encoding="utf-8"))["tools"]
 tools = [{"type": "function", "function": {
@@ -52,12 +58,11 @@ PROMPTS = [
 for p in PROMPTS:
     enc = tok.apply_chat_template([{"role": "user", "content": p}], tools=tools,
                                   add_generation_prompt=True, return_tensors="pt",
-                                  return_dict=True, enable_thinking=False)
+                                  return_dict=True, **_TMPL.template_kwargs(False))
     enc = {k: v.to(m.device) for k, v in enc.items()}
     with torch.no_grad():
         out = m.generate(**enc, max_new_tokens=MAX_NEW, do_sample=True,
-                         temperature=0.7, top_p=0.8, top_k=20,
-                         pad_token_id=tok.pad_token_id)
+                         pad_token_id=tok.pad_token_id, **_TMPL.gen_params())
     text = tok.decode(out[0, enc["input_ids"].shape[1]:], skip_special_tokens=False)
     emitted = "tool_call" in text or any(t["function"]["name"] in text for t in tools)
     print("=" * 72)

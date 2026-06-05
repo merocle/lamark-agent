@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import torch
 from datasets import Dataset
@@ -21,6 +22,9 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
 
 from molf import Expert, SparseAdamW, export_lora_adapter, inject_molf, molf_param_groups
 from traindata import count_steps, guard_steps, load_canonical, make_tokenize, pack
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/ for model_template
+from model_template import TemplateAdapter
 
 
 def _env(k):
@@ -55,7 +59,9 @@ if tok.pad_token is None:
 
 # assistant-only loss (invariant 12) — the previous full-sequence labels=list(ids)
 # trained on user/system tokens too; make_tokenize masks to assistant tokens.
-_tokenize = make_tokenize(tok, MAX_LENGTH, assistant_only=True)
+adapter = TemplateAdapter.for_model(MODEL_LOCAL, os.environ.get("FAMILY"))
+print(f"[molf] template family={adapter.family}", flush=True)
+_tokenize = make_tokenize(tok, MAX_LENGTH, adapter, assistant_only=True)
 
 
 def build(path, extra="", oversample=1):

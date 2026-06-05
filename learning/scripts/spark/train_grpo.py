@@ -37,8 +37,9 @@ from peft import LoraConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/ for grpo_verify + agentic_format
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/ for grpo_verify + model_template
 from grpo_verify import reward
+from model_template import TemplateAdapter
 
 
 def _env(k: str) -> str:
@@ -74,29 +75,35 @@ tok = AutoTokenizer.from_pretrained(MODEL_LOCAL, trust_remote_code=True)
 if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 
+tmpl = TemplateAdapter.for_model(MODEL_LOCAL, os.environ.get("FAMILY"))
+print(f"[grpo] template family={tmpl.family}", flush=True)
+
 
 def load_prompts(path: str) -> Dataset:
-    """Pre-render each prompt to a string with tools baked in; keep verify spec."""
+    """Pre-render each prompt to a string with tools baked in (only a prompt, no
+    completion → no prefix fragility). The adapter places tools/thinking for this
+    family; tool-loop prompts use enable_thinking=False to match serving."""
     rows = []
     for line in open(path, encoding="utf-8"):
         line = line.strip()
         if not line:
             continue
         r = json.loads(line)
-        pstr = tok.apply_chat_template(r["prompt"], tools=r.get("tools") or None, tokenize=False,
-                                       add_generation_prompt=True, enable_thinking=False)
+        pstr = tok.apply_chat_template(tmpl.to_messages(r["prompt"]), tools=r.get("tools") or None,
+                                       tokenize=False, add_generation_prompt=True,
+                                       **tmpl.template_kwargs(False))
         rows.append({"prompt": pstr, "verify": r["verify"]})
     return Dataset.from_list(rows)
 
 
 def tool_call_reward(completions, **kwargs):
-    """TRL reward func: score each completion against its prompt's verify spec.
-    `verify` arrives as a per-prompt column forwarded by TRL."""
+    """TRL reward func: score each completion against its prompt's verify spec,
+    parsing with THIS family's tokens. `verify` is a per-prompt column from TRL."""
     verify = kwargs["verify"]
     out = []
     for comp, spec in zip(completions, verify):
         text = comp if isinstance(comp, str) else (comp[-1].get("content") or "")
-        out.append(reward(text, spec))
+        out.append(reward(text, spec, parse=tmpl.parse_completion))
     return out
 
 

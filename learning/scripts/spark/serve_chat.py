@@ -27,18 +27,23 @@ from __future__ import annotations
 
 import json
 import os
-import re
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/ for model_template
+from model_template import TemplateAdapter
+
 MODEL_LOCAL = os.environ["MODEL_LOCAL"]
 ADAPTER_DIR = os.environ["ADAPTER_DIR"]
 PORT = int(os.environ.get("PORT", "8000"))
+_TMPL = TemplateAdapter.for_model(MODEL_LOCAL, os.environ.get("FAMILY"))
 
 print(f"[serve] loading {MODEL_LOCAL} + adapter {ADAPTER_DIR} ...", flush=True)
 tok = AutoTokenizer.from_pretrained(MODEL_LOCAL, trust_remote_code=True)
@@ -55,35 +60,19 @@ print(f"[serve] ready on :{PORT}  (models: base, lamark)", flush=True)
 def _prep(messages, enable_thinking, tools):
     enc = tok.apply_chat_template(
         messages, tools=tools or None, add_generation_prompt=True, return_tensors="pt",
-        return_dict=True, enable_thinking=enable_thinking)
+        return_dict=True, **_TMPL.template_kwargs(enable_thinking))
     return {k: v.to(_model.device) for k, v in enc.items()}
 
 
-_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
-_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-
-
 def _parse_assistant(text):
-    """Split a raw assistant generation into (content, reasoning, tool_calls).
-
-    reasoning = the <think> block (returned separately, not left dangling in
-    content as the old serve did); tool_calls = parsed <tool_call> JSON in the
-    OpenAI shape so callers get a real tool call, not narrated prose."""
-    reasoning = None
-    if (m := _THINK_RE.search(text)):
-        reasoning = m.group(1).strip()
-        text = _THINK_RE.sub("", text)
-    calls = []
-    for raw in _CALL_RE.findall(text):
-        try:
-            obj = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        calls.append({"id": f"call_{len(calls) + 1}", "type": "function",
-                      "function": {"name": obj.get("name", "unknown"),
-                                   "arguments": json.dumps(obj.get("arguments", {}))}})
-    content = _CALL_RE.sub("", text).strip()
-    return content, reasoning, calls
+    """Split a raw generation into (content, reasoning, OpenAI tool_calls) using
+    THIS model family's tokens (Qwen <think>/<tool_call> vs Gemma 4 channel).
+    reasoning is returned separately, not left dangling in content."""
+    content, reasoning, calls = _TMPL.parse_completion(text)
+    tool_calls = [{"id": f"call_{i + 1}", "type": "function",
+                   "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])}}
+                  for i, c in enumerate(calls)]
+    return content, reasoning, tool_calls
 
 
 # Stop at the assistant turn boundary so the model doesn't hallucinate a
