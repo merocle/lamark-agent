@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use lamark_config::Config;
 use lamark_core::{AIAgent, Conversation, PassthroughHarness};
 use crate::openai_client::OpenAIClient;
+use crate::tools::DefaultExecutor;
 
 /// Run the interactive chat session.
 pub async fn run(args: crate::cli::ChatArgs, cfg: Arc<Config>) {
@@ -15,7 +16,8 @@ pub async fn run(args: crate::cli::ChatArgs, cfg: Arc<Config>) {
         cfg.model.api_key(),
     ));
     let harness = Arc::new(PassthroughHarness);
-    let agent = AIAgent::new(client, harness);
+    let executor = Arc::new(DefaultExecutor::new(cfg.clone()));
+    let agent = AIAgent::new(client, harness, executor);
 
     let mut conversation = Conversation::default();
 

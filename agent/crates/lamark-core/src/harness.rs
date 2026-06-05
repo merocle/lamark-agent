@@ -103,3 +103,16 @@ impl HarnessStack for PassthroughHarness {
         RegulationOutput::None
     }
 }
+
+// ─── ToolExecutor trait ───────────────────────────────────────────────
+
+/// Async trait for executing tool calls with real logic.
+///
+/// Implemented in the `lamark` crate where filesystem, HTTP, and shell
+/// dependencies are available. `AIAgent` holds an `Arc<dyn ToolExecutor>`
+/// to dispatch tool calls during the agent loop.
+#[async_trait::async_trait]
+pub trait ToolExecutor: Send + Sync {
+    /// Execute a single tool call and return the result.
+    async fn execute(&self, call: &ToolCall, ctx: &TurnContext<'_>) -> ToolResult;
+}

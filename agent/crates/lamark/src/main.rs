@@ -4,6 +4,7 @@ use std::sync::Arc;
 mod cli;
 mod command;
 mod openai_client;
+mod tools;
 
 use cli::{Cmd, GlobalOptions};
 use lamark_config::{LoadOptions, load, load_or_init};
@@ -90,8 +91,8 @@ fn make_load_options(global: &GlobalOptions) -> LoadOptions {
 async fn main() {
     let args = std::env::args().collect::<Vec<_>>();
 
-
-    // Extract global options before subcommand for config loading.
+    // Extract global options (scan all args; binary path at index 0 won't match any flag).
+    // Note: global options only work when placed AFTER the subcommand name, e.g. `lamark chat -v`.
     let global = extract_global(&args);
 
     // Initialize tracing subscriber.
@@ -117,12 +118,9 @@ async fn main() {
         })
     });
 
-    // Parse subcommand (from subcommand name onward).
-    let sub_start = find_subcommand_start(&args);
+    // Parse subcommand: skip args[0] (binary path) since we already provide "lamark" as the program name.
     let mut sub_args = vec!["lamark".to_string()];
-    // args[0] is the binary path; skip it since we already prepend "lamark" as the program name.
-    let actual_start = sub_start.saturating_sub(1);
-    sub_args.extend(args.get(actual_start..).unwrap_or(&args[1..]).iter().cloned());
+    sub_args.extend(args.get(1..).unwrap_or(&args).iter().cloned());
 
     match Cmd::parse_from(&sub_args) {
         Cmd::Chat(chat) => {
@@ -179,17 +177,3 @@ async fn main() {
     }
 }
 
-/// Find the index of the subcommand name in the arg list.
-fn find_subcommand_start(args: &[String]) -> usize {
-    let subcommands = [
-        "chat", "gateway", "mcp", "acp", "skills", "plugins", "trace", "config", "webui", "remote",
-        "agent", "exec", "doctor",
-    ];
-    for (i, arg) in args.iter().enumerate() {
-        let name = arg.strip_prefix('-').unwrap_or(arg);
-        if subcommands.contains(&name) {
-            return i;
-        }
-    }
-    0
-}

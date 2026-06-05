@@ -1,16 +1,16 @@
 //! Lamark core — fundamental agent abstractions.
 
+pub mod agent;
+pub mod harness;
+pub mod prompt;
 pub mod tool;
 pub mod turn;
-pub mod harness;
-pub mod agent;
-pub mod prompt;
 
+pub use agent::AIAgent;
+pub use harness::{HarnessStack, PassthroughHarness, ToolExecutor};
+pub use prompt::SystemPrompt;
 pub use tool::{ToolCall, ToolDefinition, ToolResult};
 pub use turn::{Conversation, Message, TurnContext};
-pub use agent::AIAgent;
-pub use harness::{HarnessStack, PassthroughHarness};
-pub use prompt::SystemPrompt;
 
 /// A trait for interacting with various LLM providers.
 #[async_trait::async_trait]

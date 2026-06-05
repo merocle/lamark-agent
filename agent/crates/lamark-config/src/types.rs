@@ -23,6 +23,32 @@ pub struct Config {
 
     /// Project root (where .lamark/ lives).
     pub project_dir: PathBuf,
+
+    /// Knowledge-base URL for memory/web tools (optional).
+    pub knowledge_base_url: Option<String>,
+
+    /// Maximum tool call iterations per turn.
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: usize,
+}
+
+fn default_max_tool_iterations() -> usize {
+    5
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            profile: "default".to_string(),
+            model: ModelConfig::default(),
+            agent: AgentConfig::default(),
+            plugins: Vec::new(),
+            skill_paths: vec![PathBuf::from("~/.lamark/skills")],
+            project_dir: PathBuf::from("."),
+            knowledge_base_url: None,
+            max_tool_iterations: 5,
+        }
+    }
 }
 
 /// Model provider configuration.
@@ -42,6 +68,18 @@ pub struct ModelConfig {
 
     /// Reasoning effort (none, low, medium, high, xhigh).
     pub reasoning: Option<String>,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            provider: "openai".to_string(),
+            model_id: "gpt-4o".to_string(),
+            api_key: None,
+            base_url: None,
+            reasoning: None,
+        }
+    }
 }
 
 impl ModelConfig {
@@ -83,6 +121,18 @@ pub struct AgentConfig {
 
     /// Tool-use enforcement configuration.
     pub tool_use_enforcement: Option<ToolUseEnforcement>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            identity: String::new(),
+            safety: SafetyMode::default(),
+            max_tokens: None,
+            task_completion_guidance: Some(true),
+            tool_use_enforcement: None,
+        }
+    }
 }
 
 /// Tool-use enforcement configuration.
