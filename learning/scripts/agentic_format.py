@@ -48,6 +48,27 @@ def wrap_thinking(reasoning: str, answer: str) -> str:
     return f"{block}\n\n{body}" if body else block
 
 
+_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+
+
+def parse_completion(text: str) -> tuple[str | None, str | None, list[dict]]:
+    """Parse a raw model generation into (content, reasoning, tool_calls), where each
+    tool_call is {"name", "arguments": dict}. Used by the GRPO verifier (and mirrors
+    what the serve layer does) so reward scoring sees the same structure training did."""
+    reasoning, body = split_thinking(text)
+    calls: list[dict] = []
+    for raw in _CALL_RE.findall(body):
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        args = obj.get("arguments", obj.get("parameters", {}))
+        calls.append({"name": obj.get("name", "unknown"),
+                      "arguments": args if isinstance(args, dict) else {}})
+    content = _CALL_RE.sub("", body).strip()
+    return (content or None), reasoning, calls
+
+
 def split_thinking(content: str) -> tuple[str | None, str]:
     """Inverse of wrap_thinking: (reasoning_or_None, answer). Tolerant of whitespace."""
     if THINK_OPEN in content and THINK_CLOSE in content:
