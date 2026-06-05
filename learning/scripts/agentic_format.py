@@ -204,6 +204,42 @@ def validate_rows(rows: list[dict]) -> list[dict]:
     return rows
 
 
+def read_jsonl(path: Path) -> list[dict]:
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            out.append(json.loads(line))
+    return out
+
+
+def conversations_to_row(rec: dict, *, source: str = "converted") -> dict:
+    """Lift a back-compat `{"conversations":[...]}` record into a canonical
+    trajectory row (tools=None). Any `<think>` already embedded in an assistant
+    value is detected and the row tagged reasoning="on", so the trainer tokenizes
+    it with the matching enable_thinking flag."""
+    msgs: list[dict] = []
+    reasoning = "off"
+    for m in rec["conversations"]:
+        role, val = m["role"], m["value"]
+        if role == "assistant":
+            think, answer = split_thinking(val)
+            if think:
+                reasoning = "on"
+            msgs.append(assistant_msg(answer, reasoning=think))
+        elif role == "system":
+            msgs.append(system_msg(val))
+        else:
+            msgs.append(user_msg(val))
+    return trajectory_row(msgs, tools=None, reasoning=reasoning, source=source)
+
+
+def as_canonical(rec: dict, *, source: str = "converted") -> dict:
+    """Accept either a canonical trajectory row or a conversations record and
+    return a canonical row. Lets the assembler ingest mixed-format inputs."""
+    return conversations_to_row(rec, source=source) if "conversations" in rec else rec
+
+
 def write_jsonl(path: Path, rows: list[dict], *, dry_run: bool = False) -> None:
     if dry_run:
         print(f"[dry-run] {len(rows)} rows -> {path}")
