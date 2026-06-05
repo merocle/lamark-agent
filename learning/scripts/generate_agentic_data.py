@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Teacher-model generator for Lamark agentic SFT data — uses the LiteLLM endpoint
-(spark-11:4000) to author DIVERSE multi-turn tool-use trajectories grounded in
+(10.212.212.1:4000) to author DIVERSE multi-turn tool-use trajectories grounded in
 our real tool catalog (learning/data/tools.yaml), emitted in our canonical
 format (agentic_format), so it feeds build_dataset.py --hf-trajectories directly.
 
@@ -24,10 +24,10 @@ every trajectory — dropping (and counting) anything malformed. So a confused
 teacher can never inject a malformed call into training.
 
 Never greedy (invariant 9). Decoding defaults: temperature 0.8, top_p 0.9,
-top_k 20. Run where spark-11:4000 is reachable.
+top_k 20. Run where the proxy (10.212.212.1:4000) is reachable.
 
-Env: LITELLM_BASE_URL (default http://spark-11:4000/v1), LITELLM_API_KEY,
-LITELLM_MODEL (default "qwen3_5_moe"; if that isn't a name the proxy serves, the
+Env: LITELLM_BASE_URL (default http://10.212.212.1:4000/v1), LITELLM_API_KEY,
+LITELLM_MODEL (default "qwen/qwen3.6-35b-a3b"; if that isn't a name the proxy serves, the
 script auto-resolves against /v1/models — prefer a qwen model — and prints what
 it picked; `--list-models` just prints the proxy's catalog. Do NOT use the
 litellm-SDK "openai/" prefix when calling the proxy directly). Only standard
@@ -57,12 +57,11 @@ import agentic_format as af
 REPO = Path(__file__).resolve().parents[2]
 TOOLS_YAML = REPO / "learning" / "data" / "tools.yaml"
 
-BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://spark-11:4000/v1").rstrip("/")
+BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://10.212.212.1:4000/v1").rstrip("/")
 API_KEY = os.environ.get("LITELLM_API_KEY", "sk-spark11")
-# The model name as the PROXY has it registered. Note: the "openai/" prefix is
-# litellm-SDK provider-routing syntax — wrong when calling the proxy's OpenAI API
-# directly (often a 400). Use the bare alias; override with LITELLM_MODEL.
-MODEL = os.environ.get("LITELLM_MODEL", "qwen3_5_moe")
+# The model name as the PROXY has it registered (verified against /v1/models).
+# Override with LITELLM_MODEL.
+MODEL = os.environ.get("LITELLM_MODEL", "qwen/qwen3.6-35b-a3b")
 # Non-standard params some strict proxies reject with HTTP 400 — opt-in only.
 # Strict JSON is requested in the prompt and parsed tolerantly, so json-mode is
 # not required; enable it if your backend supports guided JSON for cleaner output.
