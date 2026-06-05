@@ -14,15 +14,18 @@ Output trajectories are the model-NEUTRAL canonical format; the trainers render
 them to each model's template tokens (Qwen <think> / Gemma 4 channel / Nemotron)
 via model_template.TemplateAdapter — so one corpus trains any model.
 
+Results are written to learning/datasets/out/ in the repo by default (gitignored;
+override with --out-dir).
+
 Examples:
   # full run (needs spark-11:4000 reachable + `datasets` installed for HF)
-  python generate_all.py --out-dir ~/.lamark/data --with-dpo --with-grpo
+  python generate_all.py --with-dpo --with-grpo
 
   # offline: just templates + assemble (no teacher, no HF download)
-  python generate_all.py --out-dir ~/.lamark/data --skip-teacher --skip-hf
+  python generate_all.py --skip-teacher --skip-hf
 
   # see the plan without running anything
-  python generate_all.py --out-dir ~/.lamark/data --dry-run
+  python generate_all.py --dry-run
 
 Env (passed through to the teacher step): LITELLM_BASE_URL (default
 http://spark-11:4000/v1), LITELLM_API_KEY, LITELLM_MODEL.
@@ -52,8 +55,9 @@ def run(cmd: list[str], *, dry: bool, step: str) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build the whole Lamark training corpus",
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
-    ap.add_argument("--out-dir", type=Path, default=Path.home() / ".lamark" / "data",
-                    help="where train.jsonl/val.jsonl (+ gen/hf/dpo/grpo) are written")
+    ap.add_argument("--out-dir", type=Path, default=DS.parent / "out",
+                    help="where train.jsonl/val.jsonl (+ gen/hf/dpo/grpo) are written "
+                         "(default: learning/datasets/out/ in the repo; gitignored)")
     ap.add_argument("--facts", type=Path, default=DATA / "lamark_facts.jsonl",
                     help="identity/knowledge facts for build_dataset")
     ap.add_argument("--general", type=Path, default=None, help="optional general-breadth JSONL")

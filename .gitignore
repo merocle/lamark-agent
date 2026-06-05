@@ -108,3 +108,7 @@ python/vendor/hermes/.lamark/
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
+
+# generated training corpus (assembled train/val + teacher/HF data — may contain
+# external/teacher content; regenerable; never commit per invariant 3)
+learning/datasets/out/
