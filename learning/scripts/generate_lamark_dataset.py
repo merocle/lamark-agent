@@ -35,8 +35,10 @@ def parse_args() -> argparse.Namespace:
                    help="output JSONL path (default: learning/datasets/lamark/lamark_dataset.jsonl)")
     p.add_argument("--examples-per-batch", type=int, default=20,
                    help="Q&A pairs per API call (default: 20)")
-    p.add_argument("--batches-per-topic", type=int, default=5,
-                   help="Number of API calls per topic (default: 5 → 100 examples)")
+    p.add_argument("--batches-per-topic", type=int, default=2,
+                   help="API calls per topic (default: 2 → ~40 examples/topic). Keep general a "
+                        "MINORITY breadth bucket — at 5 it swamped identity/tool data and got "
+                        "retrieved for unrelated prompts. Check build_dataset.py's blend report.")
     p.add_argument("--model",             default="gpt-5.4-mini",
                    help="OpenAI model (default: gpt-5.4-mini)")
     p.add_argument("--dry-run",           action="store_true",
@@ -81,10 +83,12 @@ TOPICS = [
         "name": "architecture_overview",
         "title": "Architecture overview",
         "focus": (
-            "What Lamark is, its Lamarckian learning concept, the four memory layers (L1 identity, "
-            "L2 episodic, L3 knowledge edits, L4 style/voice), the three independent processes "
-            "(Rust agent runtime, Kotlin knowledge-base, Python training pipeline), and how they "
-            "couple only through the file system and HTTP."
+            "What Lamark is and its Lamarckian learning concept: the three independent processes "
+            "(Rust agent runtime, Kotlin knowledge-base, Python training pipeline) coupled only "
+            "through the file system and HTTP. Identity and tool knowledge are taught via SFT "
+            "training data (not weight edits); persistent memory lives in the knowledge-base over "
+            "HTTP. Do NOT mention an L1/L2/L3/L4 memory-layer model or MEMIT/ROME weight editing — "
+            "that design was abandoned (superseded by the SFT-data approach)."
         ),
     },
     {
@@ -171,11 +175,12 @@ TOPICS = [
         "name": "lora_on_spark",
         "title": "LoRA training on DGX Spark",
         "focus": (
-            "Practical DGX Spark training: the pytorch:26.01-py3 fallback container (NGC auth issues), "
-            "bf16 LoRA only (no bitsandbytes QLoRA — confirmed OOM at 4% for MoE), never unfreeze "
-            "the MoE router, no ZeRO-3 for Qwen3.6 MoE LoRA (breaks gradients, use ZeRO-2), "
-            "mamba-ssm / causal-conv1d require --no-build-isolation, torchao>=0.16.0 requirement, "
-            "manual LoRA merge for NemotronH (PeftModel.from_pretrained WeightConverter bug)."
+            "Practical DGX Spark training for the ACTIVE model Qwen3.5-9B (instruct) in the "
+            "lamark/sft:26.01 image: bf16 LoRA only (no bitsandbytes QLoRA — confirmed OOM at 4% "
+            "for MoE), never unfreeze the MoE router, no ZeRO-3 for Qwen3.6 MoE LoRA (use ZeRO-2), "
+            "assistant-only loss is mandatory, packing + flash-linear-attention for throughput, "
+            "and MoLF-E (frozen base + LoRA experts) as the current best path. Treat NemotronH / "
+            "MEMIT details as historical only."
         ),
     },
     {
