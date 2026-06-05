@@ -62,9 +62,7 @@ def _reference_completion(asst: dict) -> str:
     args = fn["arguments"]
     if isinstance(args, str):
         args = json.loads(args)
-    think = ""
-    if asst.get("content") and af.THINK_OPEN in asst["content"]:
-        think = asst["content"].split(af.THINK_CLOSE)[0] + af.THINK_CLOSE
+    think = f"{af.THINK_OPEN}\n{asst['thinking']}\n{af.THINK_CLOSE}" if asst.get("thinking") else ""
     call = json.dumps({"name": fn["name"], "arguments": args})
     return f"{think}<tool_call>{call}</tool_call>"
 

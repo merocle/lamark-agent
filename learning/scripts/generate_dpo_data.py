@@ -65,7 +65,11 @@ def _verify_spec(asst: dict) -> dict:
 
 
 def _to_text(msg: dict) -> str:
+    """Render to Qwen-style text for verifier scoring only (preference ordering);
+    the stored messages stay neutral and are re-rendered per family at train time."""
     parts = []
+    if msg.get("thinking"):
+        parts.append(f"{af.THINK_OPEN}\n{msg['thinking']}\n{af.THINK_CLOSE}")
     if msg.get("content"):
         parts.append(msg["content"])
     for tc in msg.get("tool_calls", []) or []:
@@ -75,8 +79,10 @@ def _to_text(msg: dict) -> str:
 
 
 def _normalize_chosen(asst: dict) -> dict:
-    """Chosen turn with tool_call args as dicts (parity with rejected)."""
+    """Chosen turn, neutral: keep the thinking field, tool_call args as dicts."""
     out = {"role": "assistant", "content": asst.get("content")}
+    if asst.get("thinking"):
+        out["thinking"] = asst["thinking"]
     if asst.get("tool_calls"):
         out["tool_calls"] = [{"id": tc.get("id", "call_1"), "type": "function",
                               "function": {"name": tc["function"]["name"],

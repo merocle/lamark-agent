@@ -104,14 +104,13 @@ def user_msg(content: str) -> dict:
 
 def assistant_msg(answer: str | None = None, *, reasoning: str | None = None,
                   tool_calls: list[dict] | None = None) -> dict:
-    """Outgoing assistant turn. `reasoning` (if given) is wrapped into `answer`;
-    a turn that only calls tools has answer=None and carries `tool_calls`."""
-    content: str | None
-    if reasoning is not None:
-        content = wrap_thinking(reasoning, answer or "")
-    else:
-        content = answer
-    msg: dict[str, Any] = {"role": "assistant", "content": content}
+    """Outgoing assistant turn, MODEL-NEUTRAL. `reasoning` is stored in a separate
+    `thinking` field — NOT baked into content — so a per-model adapter can render
+    it as <think> (Qwen) or <|channel>thought (Gemma 4) at train/eval time. A turn
+    that only calls tools has content=None and carries `tool_calls`."""
+    msg: dict[str, Any] = {"role": "assistant", "content": answer}
+    if reasoning is not None and str(reasoning).strip():
+        msg["thinking"] = str(reasoning).strip()
     if tool_calls:
         msg["tool_calls"] = tool_calls
     return msg
@@ -192,10 +191,14 @@ def validate_row(row: dict) -> None:
         if role == "assistant":
             saw_assistant = True
             content = m.get("content")
+            thinking = m.get("thinking")
+            if thinking is not None and not str(thinking).strip():
+                raise FormatError("empty 'thinking' field")
             if content:
-                n_open, n_close = content.count(THINK_OPEN), content.count(THINK_CLOSE)
-                if n_open != n_close:
-                    raise FormatError(f"unbalanced think tags ({n_open} open, {n_close} close)")
+                # Reasoning belongs in the neutral `thinking` field, never as baked
+                # template tokens in content (those aren't portable across models).
+                if THINK_OPEN in content or THINK_CLOSE in content:
+                    raise FormatError("think tags in content — put reasoning in the 'thinking' field")
                 # The narration anti-pattern: writing `WebSearch(...)` as prose instead
                 # of emitting a tool_call. A grounded refusal that merely names a tool
                 # ("the Read tool") is fine — only `Name(` matches.

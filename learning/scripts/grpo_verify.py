@@ -26,9 +26,11 @@ def _malformed_think_penalty(text: str) -> float:
     return 0.2 if text.count(THINK_OPEN) != text.count(THINK_CLOSE) else 0.0
 
 
-def reward(completion_text: str, verify: dict) -> float:
-    """Score one completion against its verify spec. Returns a float in [0, 1]."""
-    content, _reasoning, calls = parse_completion(completion_text)
+def reward(completion_text: str, verify: dict, parse=None) -> float:
+    """Score one completion against its verify spec. Returns a float in [0, 1].
+    `parse` defaults to the Qwen parser; pass a TemplateAdapter.parse_completion to
+    score a different model family's generation tokens."""
+    content, _reasoning, calls = (parse or parse_completion)(completion_text)
     penalty = _malformed_think_penalty(completion_text)
 
     if not verify.get("must_call", True):
