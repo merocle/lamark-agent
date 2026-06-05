@@ -29,9 +29,10 @@ FAMILY_BY_KEYWORD = {
     "nemotron": "nano_v3", "nano": "nano_v3",
 }
 
-# Gemma 4 routes reasoning through a channel marker (model-matrix: <|channel>thought).
-# Verify exact spacing against the real tokenizer when Gemma 4 is wired.
-_GEMMA_THOUGHT, _GEMMA_FINAL = "<|channel>thought", "<|channel>final"
+# Gemma 4 wraps reasoning in a channel: start token "<|channel>" (followed by the
+# channel name "thought") ... end token "<channel|>" (note the reversed pipe), then
+# the final answer. Verify exact spacing against the real tokenizer when wired.
+_GEMMA_OPEN, _GEMMA_CLOSE = "<|channel>thought", "<channel|>"
 
 _GEN_PARAMS = {  # tool-loop decoding; never greedy (invariant 9 / model matrix §11)
     "qwen": {"temperature": 0.7, "top_p": 0.8, "top_k": 20},
@@ -62,8 +63,8 @@ class TemplateAdapter:
     def _inline_thinking(self, thinking: str, answer: str | None) -> str:
         ans = (answer or "").strip()
         if self.family == "gemma4":
-            head = f"{_GEMMA_THOUGHT}\n{thinking.strip()}"
-            return f"{head}\n{_GEMMA_FINAL}\n{ans}" if ans else head
+            block = f"{_GEMMA_OPEN}\n{thinking.strip()}\n{_GEMMA_CLOSE}"
+            return f"{block}\n{ans}" if ans else block
         # qwen + nano_v3: inline <think>…</think>
         block = f"{THINK_OPEN}\n{thinking.strip()}\n{THINK_CLOSE}"
         return f"{block}\n\n{ans}" if ans else block
@@ -112,7 +113,8 @@ class TemplateAdapter:
 
     def _strip_thinking(self, text: str) -> tuple[str | None, str]:
         if self.family == "gemma4":
-            m = re.search(rf"{re.escape(_GEMMA_THOUGHT)}(.*?){re.escape(_GEMMA_FINAL)}", text, re.DOTALL)
+            # start token <|channel> (+ channel label) ... end token <channel|>
+            m = re.search(r"<\|channel>\s*\w*\s*(.*?)\s*<channel\|>", text, re.DOTALL)
             if m:
                 return m.group(1).strip(), text[m.end():].strip()
             return None, text.strip()
