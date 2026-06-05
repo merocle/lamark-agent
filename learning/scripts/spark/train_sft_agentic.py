@@ -59,8 +59,8 @@ TRAJ_OVERSAMPLE = int(os.environ.get("TRAJ_OVERSAMPLE", "3"))  # repeat trajecto
 # optimizer steps. Effective batch = BATCH_SIZE×GRAD_ACCUM (8×2 = 16, the recipe).
 # Turning GRAD_CKPT off would balloon activations and OOM at batch>1 — only do
 # that with BATCH_SIZE=1 for a latency experiment.
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "4"))
-GRAD_ACCUM = int(os.environ.get("GRAD_ACCUM", "4"))
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
+GRAD_ACCUM = int(os.environ.get("GRAD_ACCUM", "2"))
 GRAD_CKPT = os.environ.get("GRAD_CKPT", "1") == "1"
 DL_WORKERS = int(os.environ.get("DL_WORKERS", "4"))
 PACK = os.environ.get("PACK", "1") == "1"   # concatenate short rows into dense max_len seqs

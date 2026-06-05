@@ -33,6 +33,13 @@ RUN pip install --no-cache-dir \
 # slow path otherwise). Built against the in-image torch, so --no-build-isolation.
 RUN pip install --no-cache-dir --no-build-isolation causal-conv1d
 
+# flash-linear-attention: the FAST kernels for Qwen3.5's gated-DeltaNet layers.
+# Without it, transformers logs "fast path is not available ... falling back to
+# torch implementation" and training/inference is token-bound on a slow path.
+# Triton-based (works on GB10 sm_121 with the in-image Triton 3.7).
+RUN pip install --no-cache-dir flash-linear-attention
+RUN python -c "import fla; print(f'fla {fla.__version__} ok')"
+
 # Fail fast at build time on the import surface + transformers/qwen3_5 support.
 RUN python -c "import transformers, peft, trl, accelerate, datasets; \
 print(f'transformers {transformers.__version__} peft {peft.__version__} trl {trl.__version__} ok')"
