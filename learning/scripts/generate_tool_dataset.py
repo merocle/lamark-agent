@@ -159,49 +159,101 @@ def _openai_tools(tools: list[dict]) -> list[dict]:
     }} for t in adopt(tools)]
 
 
+_SYS = "You are Lamark, a local AI agent. Use tools when helpful."
+_FILES = ["src/main.rs", "src/lib.rs", "Cargo.toml", "README.md",
+          "agent/crates/lamark-core/src/lib.rs", "learning/scripts/train_sft.py"]
+_QUERIES = ["the lamark agent", "rust async runtimes", "tokio vs async-std performance",
+            "qwen3.5 tool calling format", "MoE LoRA training on DGX Spark", "ripgrep flags"]
+_SYMS = ["fn main", "struct ToolRegistry", "trait Tool", "impl ModelProvider", "async fn run_turn"]
+_CMDS = ["ls -la", "git status", "cargo check", "just test -p lamark-core", "df -h"]
+_URLS = ["https://example.com", "https://doc.rust-lang.org/book/", "https://tokio.rs"]
+_NOTES = ["the user prefers tabs over spaces", "the project targets DGX Spark",
+          "CI runs `just test`", "the user is Aleksei, a JetBrains engineer"]
+_TASKS = ["investigate the failing login test", "add docs to the provider trait",
+          "benchmark the tokenizer", "wire the trajectory bucket into training"]
+_SKILLS = ["rust-review", "commit-helper", "test-writer"]
+
+
+def _traj(idx, defs, user, name, args, result, final, name2=None, args2=None, result2=None):
+    """Build one Nemotron-Agentic-v1 trajectory (single- or two-step)."""
+    asst1 = {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": name, "arguments": json.dumps(args)}}]}
+    msgs = [{"role": "system", "content": _SYS}, {"role": "user", "content": user},
+            asst1, {"role": "tool", "tool_call_id": "call_1", "content": result}]
+    if name2:
+        msgs.append({"role": "assistant", "content": None,
+                     "tool_calls": [{"id": "call_2", "type": "function",
+                                     "function": {"name": name2, "arguments": json.dumps(args2)}}]})
+        msgs.append({"role": "tool", "tool_call_id": "call_2", "content": result2})
+    msgs.append({"role": "assistant", "content": final})
+    return {"uuid": f"tooltraj-{idx}", "source": "synthetic_tool_trajectory",
+            "reasoning": "off", "reducer_version": "nemotron-agentic-v1",
+            "tools": defs, "messages": msgs}
+
+
 def build_trajectories(tools: list[dict]) -> list[dict]:
-    tool_defs = _openai_tools(tools)
+    """Template-driven native tool-call trajectories — single + two-step combos.
+
+    Args are valid-by-construction against each tool's schema, so the data never
+    teaches a malformed call. Variety comes from the cross-product of files /
+    queries / symbols / commands, not an LLM."""
+    defs = _openai_tools(tools)
+    names = {t["name"] for t in adopt(tools)}
     out: list[dict] = []
-    goals = {
-        "Read": "Show me the contents of src/main.rs.",
-        "Write": "Create a hello-world Rust file at src/main.rs.",
-        "Edit": "Rename the variable foo to bar in src/main.rs.",
-        "Grep": "Find where fn main is defined.",
-        "Bash": "List the files in the workspace.",
-        "WebSearch": "Search the web for the lamark agent.",
-        "WebFetch": "Fetch and summarize https://example.com.",
-        "MemorySearch": "What do you remember about my project preferences?",
-        "Agent": "Delegate a deep code review of the repo to a subagent.",
-        "SkillView": "Open the rust-review skill.",
-        "TaskCreate": "Add a task to investigate the failing test.",
-    }
-    for t in adopt(tools):
-        name = t["name"]
-        if name not in goals:
-            continue
-        args = _sample_args(t.get("parameters", {}))
-        result = {
-            "Read": "fn main() { println!(\"hello\"); }",
-            "Bash": "Cargo.toml  src/  target/",
-            "WebSearch": '[{"title":"Lamark agent","url":"https://example.com"}]',
-            "Grep": "src/main.rs:1: fn main() {",
-        }.get(name, "ok")
-        out.append({
-            "uuid": f"tooltraj-{name.lower()}",
-            "source": "synthetic_tool_trajectory",
-            "reasoning": "off",
-            "reducer_version": "nemotron-agentic-v1",
-            "tools": tool_defs,
-            "messages": [
-                {"role": "system", "content": "You are Lamark, a local AI agent. Use tools when helpful."},
-                {"role": "user", "content": goals[name]},
-                {"role": "assistant", "content": None,
-                 "tool_calls": [{"id": "call_1", "type": "function",
-                                 "function": {"name": name, "arguments": json.dumps(args)}}]},
-                {"role": "tool", "tool_call_id": "call_1", "content": result},
-                {"role": "assistant", "content": f"Done — I used the {name} tool to handle that."},
-            ],
-        })
+    i = 0
+
+    def add(*a, **k):
+        nonlocal i
+        out.append(_traj(i, defs, *a, **k))
+        i += 1
+
+    # ── single-step ──
+    for f in _FILES:
+        add(f"Show me the contents of {f}.", "Read", {"file_path": f},
+            "fn main() { println!(\"hi\"); }", f"That file defines the entry point.")
+    for q in _QUERIES:
+        add(f"Search the web for {q}.", "WebSearch", {"query": q},
+            f'[{{"title":"{q}","url":"https://example.com"}}]', f"Here are the top results for {q}.")
+    for s in _SYMS:
+        add(f"Find where {s} is defined.", "Grep", {"pattern": s},
+            f"src/main.rs:1: {s}", f"{s} is defined in src/main.rs.")
+    for c in _CMDS:
+        add(f"Run `{c}`.", "Bash", {"command": c}, "ok", "Done.")
+    for u in _URLS:
+        add(f"Fetch and summarize {u}.", "WebFetch", {"url": u}, "<page text>", "Summarized.")
+    for q in _QUERIES[:4]:
+        add(f"What do you remember about {q}?", "MemorySearch", {"query": q},
+            "no prior notes", f"I have no stored notes on {q} yet.")
+    for n in _NOTES:
+        add(f"Remember that {n}.", "MemoryWrite", {"content": n}, "saved", "Noted.")
+    for t in _TASKS:
+        add(f"Add a task to {t}.", "TaskCreate", {"subject": t, "description": t},
+            "task #1 created", "Task added.")
+    for sk in _SKILLS:
+        add(f"Open the {sk} skill.", "SkillView", {"skill_name": sk}, "# skill body", "Opened.")
+    for ext, lang in [("**/*.rs", "Rust"), ("**/*.py", "Python"), ("**/*.toml", "TOML")]:
+        add(f"List the {lang} files.", "Glob", {"pattern": ext}, "a.rs\nb.rs", "Listed.")
+    add("Search the web — and only do that.", "WebSearch", {"query": "rust 2024 edition"},
+        "[]", "No results.")
+
+    # ── two-step combos ──
+    for ext, lang in [("**/*.rs", "Rust"), ("**/*.toml", "TOML")]:
+        f = "src/main.rs" if "rs" in ext else "Cargo.toml"
+        add(f"Find the {lang} files, then read the first one.",
+            "Glob", {"pattern": ext}, f"{f}\nother",
+            f"The first {lang} file does X.", name2="Read", args2={"file_path": f},
+            result2="fn main() {}")
+    for s in _SYMS[:3]:
+        add(f"Find {s} and show its file.", "Grep", {"pattern": s}, "src/main.rs:1",
+            f"{s} lives in src/main.rs.", name2="Read", args2={"file_path": "src/main.rs"},
+            result2=f"{s} ...")
+    for c in ["ls", "git status"]:
+        add(f"Run `{c}`, then read Cargo.toml.", "Bash", {"command": c}, "Cargo.toml\nsrc",
+            "Here's the manifest.", name2="Read", args2={"file_path": "Cargo.toml"},
+            result2="[package]\nname=\"lamark\"")
+
+    assert names  # keep adopt() referenced
     return out
 
 
