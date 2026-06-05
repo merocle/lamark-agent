@@ -102,6 +102,10 @@ dmypy.json
 smoke_test_results/
 *.smoke.json
 
+# Rust / Cargo build artifacts
+agent/Cargo.lock
+agent/target/
+
 # Hermes vendor — code committed, runtime artefacts ignored
 vendor/hermes/**/__pycache__/
 vendor/hermes/**/*.pyc

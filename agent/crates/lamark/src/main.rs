@@ -120,9 +120,9 @@ async fn main() {
     // Parse subcommand (from subcommand name onward).
     let sub_start = find_subcommand_start(&args);
     let mut sub_args = vec!["lamark".to_string()];
-    // Skip args[0] (binary path) so clap doesn't interpret it as a subcommand.
-    let skip_bin = if args.first().map(|a| a.contains("lamark")).unwrap_or(false) { 1 } else { 0 };
-    sub_args.extend(args.get(sub_start.saturating_sub(skip_bin)..).unwrap_or(&args[skip_bin..]).iter().cloned());
+    // args[0] is the binary path; skip it since we already prepend "lamark" as the program name.
+    let actual_start = sub_start.saturating_sub(1);
+    sub_args.extend(args.get(actual_start..).unwrap_or(&args[1..]).iter().cloned());
 
     match Cmd::parse_from(&sub_args) {
         Cmd::Chat(chat) => {
