@@ -144,6 +144,8 @@ def main() -> int:
     ap.add_argument("--tool-trajectories", type=Path, default=None)
     ap.add_argument("--hf-trajectories", type=Path, default=None,
                     help="ingested external agentic trajectories (ingest_hf_datasets.py)")
+    ap.add_argument("--gen-trajectories", type=Path, default=None,
+                    help="teacher-generated agentic trajectories (generate_agentic_data.py)")
     ap.add_argument("--general", type=Path, default=None,
                     help="conversation JSONL merged in for breadth (optional)")
     ap.add_argument("--out-dir", required=True, type=Path)
@@ -164,7 +166,7 @@ def main() -> int:
     for path, src in [(args.tool_qa, "tool-qa"), (args.general, "general")]:
         if path and path.exists():
             rows += [af.as_canonical(r, source=src) for r in af.read_jsonl(path)]
-    for path in [args.tool_trajectories, args.hf_trajectories]:
+    for path in [args.tool_trajectories, args.hf_trajectories, args.gen_trajectories]:
         if path and path.exists():
             rows += [af.as_canonical(r) for r in af.read_jsonl(path)]
 
