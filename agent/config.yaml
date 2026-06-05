@@ -1,0 +1,14 @@
+
+profile: default
+model:
+  provider: openai
+  model_id: mlx-community/Qwen3.6-35B-A3B-8bit
+  api_key: no-api-key-needed
+  base_url: http://127.0.0.1:52415/v1
+agent:
+  identity: "You are Lamark, a helpful AI agent."
+  safety: AskFirst
+  max_tokens: 4096
+plugins: []
+skill_paths: ["~/.lamark/skills"]
+project_dir: "."

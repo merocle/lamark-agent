@@ -1,7 +1,9 @@
 use clap::Parser;
+use std::sync::Arc;
 
 mod cli;
 mod command;
+mod openai_client;
 
 use cli::{Cmd, GlobalOptions};
 use lamark_config::{LoadOptions, load, load_or_init};
@@ -84,8 +86,10 @@ fn make_load_options(global: &GlobalOptions) -> LoadOptions {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = std::env::args().collect::<Vec<_>>();
+
 
     // Extract global options before subcommand for config loading.
     let global = extract_global(&args);
@@ -101,24 +105,29 @@ fn main() {
     fmt().with_env_filter(filter).init();
 
     // Load config using global options.
-    let cfg = if global.config.is_none() {
+    let cfg = Arc::new(if global.config.is_none() {
         load_or_init().unwrap_or_else(|e| {
             eprintln!("config error: {e}");
             std::process::exit(1);
         })
     } else {
-        load(&make_load_options(&global)).unwrap_or_else(|e| {
+        load(make_load_options(&global)).unwrap_or_else(|e| {
             eprintln!("config error: {e}");
             std::process::exit(1);
         })
-    };
+    });
 
     // Parse subcommand (from subcommand name onward).
     let sub_start = find_subcommand_start(&args);
-    let sub_args: Vec<String> = args.get(sub_start..).unwrap_or(&args).to_vec();
+    let mut sub_args = vec!["lamark".to_string()];
+    // Skip args[0] (binary path) so clap doesn't interpret it as a subcommand.
+    let skip_bin = if args.first().map(|a| a.contains("lamark")).unwrap_or(false) { 1 } else { 0 };
+    sub_args.extend(args.get(sub_start.saturating_sub(skip_bin)..).unwrap_or(&args[skip_bin..]).iter().cloned());
 
     match Cmd::parse_from(&sub_args) {
-        Cmd::Chat(chat) => command::chat::run(chat, cfg),
+        Cmd::Chat(chat) => {
+            command::chat::run(chat, cfg).await;
+        }
         Cmd::Gateway(gw) => {
             let gw_opts = make_load_options(&global);
             command::gateway::run_with(gw, gw_opts, cfg);

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use lamark_config::Config;
 
 /// Stub: gateway without args struct.
+#[allow(dead_code)]
 pub fn run(_cfg: Arc<Config>) {
     tracing::info!("gateway command called (stub)");
     println!("gateway command — not yet implemented");

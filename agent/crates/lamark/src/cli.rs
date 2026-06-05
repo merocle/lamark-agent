@@ -7,7 +7,7 @@ use clap::{ArgAction, Parser};
 #[command(name = "lamark", version, about, long_about = None)]
 pub enum Cmd {
     /// Interactive chat or one-shot query.
-    #[command()]
+    #[command(trailing_var_arg = true)]
     Chat(ChatArgs),
 
     /// Run the long-running HTTP gateway.
@@ -75,8 +75,7 @@ pub struct GlobalOptions {
 
 // ───── subcommand shapes (only Chat is fully detailed in the plan)
 
-#[derive(Debug, Parser)]
-#[command(name = "chat")]
+#[derive(Debug, clap::Args)]
 pub struct ChatArgs {
     /// Global config file override (`--config /path/to/file.yaml`).
     #[arg(long, env = "LAMARK_CONFIG")]
@@ -95,12 +94,11 @@ pub struct ChatArgs {
     pub verbose: u8,
 
     /// Prompt to execute (if omitted, enter interactive TUI).
-    #[arg(value_name = "PROMPT", num_args = 0..)]
-    pub prompt: Option<Vec<String>>,
+    #[arg(action = ArgAction::Append, trailing_var_arg = true)]
+    pub prompt: Vec<String>,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "gateway")]
+#[derive(Debug, clap::Args)]
 pub struct GatewayArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -115,8 +113,7 @@ pub struct GatewayArgs {
     pub verbose: u8,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "mcp")]
+#[derive(Debug, clap::Args)]
 pub struct McpArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -131,8 +128,7 @@ pub struct McpArgs {
     pub verbose: u8,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "acp")]
+#[derive(Debug, clap::Args)]
 pub struct AcpArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -147,8 +143,7 @@ pub struct AcpArgs {
     pub verbose: u8,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "skills")]
+#[derive(Debug, clap::Args)]
 pub struct SkillsArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -163,8 +158,7 @@ pub struct SkillsArgs {
     pub verbose: u8,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "plugins")]
+#[derive(Debug, clap::Args)]
 pub struct PluginsArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -179,8 +173,7 @@ pub struct PluginsArgs {
     pub verbose: u8,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "trace")]
+#[derive(Debug, clap::Args)]
 pub struct TraceArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -195,8 +188,7 @@ pub struct TraceArgs {
     pub verbose: u8,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "config")]
+#[derive(Debug, clap::Args)]
 pub struct ConfigArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -227,8 +219,7 @@ pub struct ConfigArgs {
     pub doctor: Option<bool>,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "webui")]
+#[derive(Debug, clap::Args)]
 pub struct WebuiArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -255,8 +246,7 @@ pub struct WebuiArgs {
     pub status: bool,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "remote")]
+#[derive(Debug, clap::Args)]
 pub struct RemoteArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -275,8 +265,7 @@ pub struct RemoteArgs {
     pub remote: Option<String>,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "agent")]
+#[derive(Debug, clap::Args)]
 pub struct AgentArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -299,8 +288,7 @@ pub struct AgentArgs {
     pub events: Option<bool>,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "exec")]
+#[derive(Debug, clap::Args)]
 pub struct ExecArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,
@@ -323,8 +311,7 @@ pub struct ExecArgs {
     pub concurrency: usize,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "doctor")]
+#[derive(Debug, clap::Args)]
 pub struct DoctorArgs {
     #[arg(long, env = "LAMARK_CONFIG")]
     pub config: Option<PathBuf>,

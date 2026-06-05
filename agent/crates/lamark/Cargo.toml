@@ -6,9 +6,6 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 
-[lints]
-workspace = true
-
 [[bin]]
 name = "lamark"
 path = "src/main.rs"
@@ -21,3 +18,7 @@ tokio       = { workspace = true }
 tracing       = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap         = { features = ["derive", "env"], workspace = true }
+async-trait   = { workspace = true }
+serde_json    = { workspace = true }
+reqwest       = { version = "0.12", features = ["json"] }
+serde        = { version = "1", features = ["derive"] }
