@@ -273,6 +273,16 @@ Install: `pip install -e learning/[spark]` (ML extras require Linux + CUDA). For
 
 The `lamark-train` entry point is the Python training CLI. The Rust binary `lamark` is the primary agent command.
 
+### Working SFT pipeline (validated on DGX Spark, Qwen3.5-9B)
+
+The nightly cycle above is the target shape; the pieces that actually run **today** live in `learning/scripts/` + `learning/scripts/spark/` and were validated end-to-end (identity + knowledge + tool-catalog Q&A; gate PASS). Use these — don't write a fresh `train.py`.
+
+- **Image:** `lamark/sft:26.01` (`learning/docker/Dockerfile.sft`) — NGC `pytorch:26.01` + **transformers 5.9** + TRL + peft + torchao 0.17 + causal-conv1d. The EasyEdit/MEMIT image (`lamark/edit`, `Dockerfile.edit`) is **abandoned** (see invariant 20).
+- **Catalog source of truth:** `learning/data/tools.yaml` (63 tools, adopt/defer/drop) → feeds both `docs/specs/04-tooling-and-protocol.md` and the generator.
+- **The loop:** edit facts / identity banks (`build_dataset.py`) / `tools.yaml` → `generate_tool_dataset.py {facts,qa,trajectories}` → `build_dataset.py --facts … --tool-facts … --tool-qa … --general general_base.jsonl --out-dir ~/.lamark/data` → `spark/train_sft.py` (bf16 LoRA r=32/α=32, `assistant_only_loss`, instruct base `Qwen/Qwen3.5-9B`) → `spark/probe_gate.py` (scored identity/knowledge/tools/regression gate, exit 0 = PASS).
+- **Serving:** `spark/serve_chat.sh start` — a transformers-backed OpenAI server on `:8765` (vLLM v0.21 can't load `qwen3_5`); the local REPL `chat_lamark.py` connects unchanged. `serve_vllm.sh` is the NemotronH-era path only.
+- **Current best adapter:** `~/.lamark/checkpoints/qwen3_5-9b-instruct-tools-lora` (identity + knowledge + tools). Trajectory (tool-call *emission*) training is generated but not yet wired into `train_sft.py` — open follow-up.
+
 ---
 
 ## Load-bearing invariants
@@ -296,6 +306,10 @@ These rules are non-negotiable across both the Rust agent and the Python trainin
 15. **Verify Unsloth support before training any Qwen3.5 dense model.**
 16. **Classify trace failures before routing to SFT.** Only REASONING failures (≈10%) belong in the nightly SFT blend. ACTION_REALIZATION + CONTRACT_MISMATCH + TRAJECTORY_DEGENERATION failures (≈90%) belong in the harness evolution pipeline (`harness_evolve.py`). Routing interface failures to SFT wastes training budget and trains the wrong signal.
 17. **Never use Action Realization as a security gate.**
+20. **MEMIT / EasyEdit knowledge-editing does not work on hybrid architectures** (NemotronH Mamba/MoE, Qwen3.5 linear-attention). EasyEdit's `generate_fast` needs a standard `past_key_values` KV cache these archs don't expose, and `qwen3_5` further requires transformers 5.x while EasyEdit pins ~4.57. Inject knowledge **and** identity via **SFT data**, not weight edits. (Historical: ADR-0010/0011 reference an abandoned L1–L4 memory-layer model — superseded by this SFT approach.)
+21. **`qwen3_5` requires transformers 5.x** (absent from 4.57.1). It loads as `Qwen3_5ForCausalLM` (text-only, no vision tower) under `AutoModelForCausalLM`. `Qwen/Qwen3.5-9B-Base` is base; `Qwen/Qwen3.5-9B` is the instruct checkpoint — train/serve the instruct one (invariant 11).
+22. **Load Qwen3.5 for inference with `device_map={"":0}`, never `"auto"`.** Under memory pressure `"auto"` CPU-offloads the linear-attention conv layers, and `causal_conv1d` requires CUDA tensors → `RuntimeError: Expected x.is_cuda()`. Ensure the GPU is free (no stray `docker run --rm` containers orphaned by a broken pipe) before serving/probing.
+23. **Identity and tool knowledge are data, not config.** Both must be present and oversampled in the SFT blend (identity Q&A banks in `build_dataset.py`; tool facts/QA from `tools.yaml` via `generate_tool_dataset.py`) — a base/instruct model will otherwise confabulate. Serve and probe with `enable_thinking=False` for clean, untruncated answers.
 18. **Skills require unit tests before registration.** The `skill_create` tool (MUSE approach) must run all `tests/` pytest files in a sandbox before registering a new skill. An untested skill silently fails at runtime without producing useful feedback. No tests → no registration.
 19. **`.memory.md` is per-agent, not per-skill-definition.** When transferring a skill to another agent or deployment, ship only SKILL.md + scripts/ + tests/ — never `.memory.md`. The memory contains agent-specific failure patterns that may mislead a different agent in a different environment. `lamark-harness` realization rules are correctness guardrails evolved from domain traces — they block technically wrong calls silently. `lamark-policy` is the security layer. Mixing them produces either security gaps or excessive agent interruptions. The Gated DeltaNet layers use different projection names than standard Transformer attention. Passing wrong `target_modules` silently trains only the attention layers and ignores SSM layers — check `model.named_modules()` against the LoRA config before starting a run. Most capability gains come from better SFT data, not a more powerful training algorithm. The GRPO tier (v0.2+) requires ≥ 30 consecutive stable nightly SFT nights, implemented task verifiers, and a stable forgetting-probe baseline before it can be activated without reward hacking.
 
