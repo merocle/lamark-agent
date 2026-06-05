@@ -12,16 +12,16 @@ to dicts) with `return_assistant_tokens_mask=True` for assistant-only loss, then
 train with a plain transformers Trainer — the same Trainer+PEFT shape that
 train_lora.py validated on this model family.
 
-Inputs:
-  DATA_TRAIN / DATA_VAL    {"conversations":[{role,value}]} JSONL (prose buckets)
-  DATA_TRAJECTORIES        Nemotron-Agentic-v1 {messages,tools} JSONL (optional)
+Inputs (unified canonical format from build_dataset.py; legacy {conversations}
+still accepted by traindata.load_canonical):
+  DATA_TRAIN / DATA_VAL    canonical {messages, tools, reasoning} JSONL
+  DATA_TRAJECTORIES        optional extra trajectory file, oversampled TRAJ_OVERSAMPLE×
 
 Env: MODEL_LOCAL, OUTPUT_DIR (required); EPOCHS=2, MAX_STEPS=-1, LORA_R=32,
      LORA_ALPHA=32, LR=1e-4, MAX_LENGTH=2048, ASSISTANT_ONLY=1
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 
@@ -30,6 +30,8 @@ from datasets import Dataset
 from peft import LoraConfig, get_peft_model
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           DataCollatorForSeq2Seq, Trainer, TrainingArguments)
+
+from traindata import count_steps, guard_steps, load_canonical, make_tokenize, pack
 
 
 def _env(k: str) -> str:
@@ -74,77 +76,21 @@ if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 
 
-def conv_rows(path: str) -> list[dict]:
-    rows = []
-    for line in open(path, encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        rec = json.loads(line)
-        msgs = [{"role": t["role"], "content": t["value"]} for t in rec["conversations"]]
-        rows.append({"messages": msgs, "tools": None})
-    return rows
+_tokenize = make_tokenize(tok, MAX_LENGTH, assistant_only=ASSISTANT_ONLY)
 
 
-def traj_rows(path: str) -> list[dict]:
-    rows = []
-    for line in open(path, encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        d = json.loads(line)
-        for m in d["messages"]:
-            for tc in (m.get("tool_calls") or []):
-                if isinstance(tc["function"]["arguments"], str):
-                    tc["function"]["arguments"] = json.loads(tc["function"]["arguments"])
-        rows.append({"messages": d["messages"], "tools": d.get("tools")})
-    return rows
-
-
-def tokenize(row: dict) -> dict | None:
-    enc = tok.apply_chat_template(
-        row["messages"], tools=row.get("tools"), tokenize=True, return_dict=True,
-        return_assistant_tokens_mask=True, truncation=True, max_length=MAX_LENGTH)
-    ids = enc["input_ids"]
-    masks = enc.get("assistant_masks")
-    if ASSISTANT_ONLY and masks and any(masks):
-        labels = [i if m else -100 for i, m in zip(ids, masks)]
-    else:
-        labels = list(ids)
-    if all(l == -100 for l in labels):   # nothing to learn (e.g. truncated past the assistant turn)
-        return None
-    return {"input_ids": ids, "attention_mask": enc["attention_mask"], "labels": labels}
-
-
-def pack(toks: list[dict], max_len: int) -> list[dict]:
-    """Greedily concatenate tokenized examples into dense max_len sequences.
-
-    Our SFT rows are mostly short (~150 tokens); padding them into a batch wastes
-    most of the compute. Packing removes padding entirely: ~thousands of short
-    rows collapse into ~hundreds of full sequences, so every token in every step
-    is useful work. (Naive concatenation — examples can attend across boundaries;
-    standard practice for SFT and an accepted minor-quality tradeoff.)"""
-    out, ids, labs = [], [], []
-    for t in toks:
-        if ids and len(ids) + len(t["input_ids"]) > max_len:
-            out.append({"input_ids": ids, "attention_mask": [1] * len(ids), "labels": labs})
-            ids, labs = [], []
-        ids = ids + t["input_ids"]
-        labs = labs + t["labels"]
-    if ids:
-        out.append({"input_ids": ids, "attention_mask": [1] * len(ids), "labels": labs})
-    return out
-
-
-def build(paths_conv: str, traj: str, oversample: int = 1) -> Dataset:
-    raw = conv_rows(paths_conv) + (traj_rows(traj) * oversample if traj else [])
-    toks = [t for t in (tokenize(r) for r in raw) if t is not None]
-    rows = pack(toks, MAX_LENGTH) if PACK else toks
-    return Dataset.from_list(rows)
+def build(path: str, extra: str = "", oversample: int = 1) -> Dataset:
+    """Load the unified canonical file (+ optional extra trajectory file, oversampled),
+    tokenize assistant-only with per-row thinking, then optionally pack."""
+    raw = load_canonical(path) + (load_canonical(extra) * oversample if extra else [])
+    toks = [t for t in (_tokenize(r) for r in raw) if t is not None]
+    return Dataset.from_list(pack(toks, MAX_LENGTH) if PACK else toks)
 
 
 train_ds = build(DATA_TRAIN, DATA_TRAJECTORIES, oversample=TRAJ_OVERSAMPLE)
-val_ds = build(DATA_VAL, "")
+val_ds = build(DATA_VAL)
+steps = count_steps(len(train_ds), BATCH_SIZE, GRAD_ACCUM, EPOCHS) if MAX_STEPS < 0 else MAX_STEPS
+guard_steps(steps, len(train_ds))
 print(f"[agentic] {'packed' if PACK else 'unpacked'} train={len(train_ds)} val={len(val_ds)} rows", flush=True)
 
 model = AutoModelForCausalLM.from_pretrained(

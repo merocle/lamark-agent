@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Train Lamark with MoLF-E (see molf.py): frozen base + two LoRA experts (r=64, r=128)
-routed by Sparse-AdamW (EPD Top-1 per module). Reuses the agentic dataset shape
-(prose conversations + tool trajectories, packed). Exports a standard LoRA adapter
-so serve_chat/probe work unchanged.
+routed by Sparse-AdamW (EPD Top-1 per module). Reads the unified canonical dataset
+(build_dataset.py) with assistant-only loss (invariant 12) and per-row thinking,
+packed. Exports a standard LoRA adapter so serve_chat/probe work unchanged.
 
 Env: MODEL_LOCAL, DATA_TRAIN, DATA_VAL, OUTPUT_DIR (required);
      DATA_TRAJECTORIES, EPOCHS=4, MAX_STEPS=-1, LR=5e-4, MAX_LENGTH=2048,
@@ -11,7 +11,6 @@ Env: MODEL_LOCAL, DATA_TRAIN, DATA_VAL, OUTPUT_DIR (required);
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 
@@ -21,6 +20,7 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           DataCollatorForSeq2Seq, Trainer, TrainingArguments)
 
 from molf import Expert, SparseAdamW, export_lora_adapter, inject_molf, molf_param_groups
+from traindata import count_steps, guard_steps, load_canonical, make_tokenize, pack
 
 
 def _env(k):
@@ -53,59 +53,21 @@ if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 
 
-def conv_rows(path):
-    rows = []
-    for line in open(path, encoding="utf-8"):
-        line = line.strip()
-        if line:
-            r = json.loads(line)
-            rows.append({"messages": [{"role": t["role"], "content": t["value"]} for t in r["conversations"]], "tools": None})
-    return rows
+# assistant-only loss (invariant 12) — the previous full-sequence labels=list(ids)
+# trained on user/system tokens too; make_tokenize masks to assistant tokens.
+_tokenize = make_tokenize(tok, MAX_LENGTH, assistant_only=True)
 
 
-def traj_rows(path):
-    rows = []
-    for line in open(path, encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        d = json.loads(line)
-        for m in d["messages"]:
-            for tc in (m.get("tool_calls") or []):
-                if isinstance(tc["function"]["arguments"], str):
-                    tc["function"]["arguments"] = json.loads(tc["function"]["arguments"])
-        rows.append({"messages": d["messages"], "tools": d.get("tools")})
-    return rows
-
-
-def tokenize(row):
-    enc = tok.apply_chat_template(row["messages"], tools=row.get("tools"), tokenize=True,
-                                  return_dict=True, truncation=True, max_length=MAX_LENGTH)
-    ids = enc["input_ids"]
-    return {"input_ids": ids, "attention_mask": enc["attention_mask"], "labels": list(ids)}
-
-
-def pack(toks, max_len):
-    out, ids, labs = [], [], []
-    for t in toks:
-        if ids and len(ids) + len(t["input_ids"]) > max_len:
-            out.append({"input_ids": ids, "attention_mask": [1] * len(ids), "labels": labs})
-            ids, labs = [], []
-        ids = ids + t["input_ids"]
-        labs = labs + t["labels"]
-    if ids:
-        out.append({"input_ids": ids, "attention_mask": [1] * len(ids), "labels": labs})
-    return out
-
-
-def build(conv, traj, oversample=1):
-    raw = conv_rows(conv) + (traj_rows(traj) * oversample if traj else [])
-    toks = [tokenize(r) for r in raw]
+def build(path, extra="", oversample=1):
+    raw = load_canonical(path) + (load_canonical(extra) * oversample if extra else [])
+    toks = [t for t in (_tokenize(r) for r in raw) if t is not None]
     return Dataset.from_list(pack(toks, MAX_LENGTH) if PACK else toks)
 
 
 train_ds = build(DATA_TRAIN, DATA_TRAJECTORIES, TRAJ_OVERSAMPLE)
-val_ds = build(DATA_VAL, "")
+val_ds = build(DATA_VAL)
+steps = count_steps(len(train_ds), BATCH_SIZE, GRAD_ACCUM, EPOCHS) if MAX_STEPS < 0 else MAX_STEPS
+guard_steps(steps, len(train_ds))
 print(f"[molf] train={len(train_ds)} val={len(val_ds)} rows", flush=True)
 
 model = AutoModelForCausalLM.from_pretrained(
