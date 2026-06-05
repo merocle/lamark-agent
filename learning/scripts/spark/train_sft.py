@@ -59,6 +59,16 @@ LORA_ALPHA = int(os.environ.get("LORA_ALPHA", "32"))
 LR = float(os.environ.get("LR", "1e-4"))
 MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "2048"))
 ASSISTANT_ONLY = os.environ.get("ASSISTANT_ONLY", "1") == "1"
+# Throughput knobs — a 9B LoRA uses only ~26 GB of Spark's ~118 GB at batch=1.
+# Raise the batch (the real lever) and KEEP gradient checkpointing ON — at
+# batch=8 checkpointed activations are ~82 GB (good utilization, safe). Turning
+# checkpointing off balloons activations and OOMs at batch>1.
+# Effective batch = BATCH_SIZE × GRAD_ACCUM (8×2 = 16, the validated recipe).
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
+GRAD_ACCUM = int(os.environ.get("GRAD_ACCUM", "2"))
+GRAD_CKPT = os.environ.get("GRAD_CKPT", "1") == "1"
+DL_WORKERS = int(os.environ.get("DL_WORKERS", "4"))
+PACK = os.environ.get("PACK", "1") == "1"   # TRL packs short rows into dense max_len seqs (no padding waste)
 
 print(f"[sft] model         : {MODEL_LOCAL}")
 print(f"[sft] train / val   : {DATA_TRAIN} | {DATA_VAL}")
@@ -90,7 +100,7 @@ if tok.pad_token is None:
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_LOCAL,
     dtype=torch.bfloat16,
-    device_map="auto",
+    device_map={"": 0},   # pin to GPU0 — never CPU-offload (causal_conv1d needs CUDA)
     trust_remote_code=True,
 )
 model.config.use_cache = False
@@ -114,9 +124,9 @@ args = SFTConfig(
     output_dir=OUTPUT_DIR,
     num_train_epochs=EPOCHS,
     max_steps=MAX_STEPS,
-    per_device_train_batch_size=1,
-    per_device_eval_batch_size=1,
-    gradient_accumulation_steps=16,   # effective batch 16 (plan Tier-1)
+    per_device_train_batch_size=BATCH_SIZE,
+    per_device_eval_batch_size=BATCH_SIZE,
+    gradient_accumulation_steps=GRAD_ACCUM,   # eff batch = BATCH_SIZE × GRAD_ACCUM
     learning_rate=LR,
     lr_scheduler_type="cosine",
     warmup_ratio=0.05,
@@ -124,7 +134,7 @@ args = SFTConfig(
     optim="adamw_torch",
     bf16=True,
     max_length=MAX_LENGTH,
-    packing=False,
+    packing=PACK,
     assistant_only_loss=ASSISTANT_ONLY,
     eval_strategy="steps",
     eval_steps=50,
@@ -132,7 +142,8 @@ args = SFTConfig(
     save_total_limit=3,
     logging_steps=5,
     report_to="none",
-    gradient_checkpointing=True,
+    gradient_checkpointing=GRAD_CKPT,
+    dataloader_num_workers=DL_WORKERS,
     dataset_num_proc=2,
 )
 

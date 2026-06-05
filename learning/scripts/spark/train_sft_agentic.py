@@ -52,6 +52,18 @@ LR = float(os.environ.get("LR", "1e-4"))
 MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "2048"))
 ASSISTANT_ONLY = os.environ.get("ASSISTANT_ONLY", "1") == "1"
 TRAJ_OVERSAMPLE = int(os.environ.get("TRAJ_OVERSAMPLE", "3"))  # repeat trajectory rows N× (rigid format)
+# Throughput knobs. A 9B LoRA uses only ~26 GB of Spark's ~118 GB at batch=1.
+# The big lever is batch size, not removing checkpointing: KEEP gradient
+# checkpointing ON (its activations scale ~linearly with batch, so batch=8 ≈
+# ~82 GB — good utilization, safe headroom) and use 8× bigger matmuls + 8× fewer
+# optimizer steps. Effective batch = BATCH_SIZE×GRAD_ACCUM (8×2 = 16, the recipe).
+# Turning GRAD_CKPT off would balloon activations and OOM at batch>1 — only do
+# that with BATCH_SIZE=1 for a latency experiment.
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "4"))
+GRAD_ACCUM = int(os.environ.get("GRAD_ACCUM", "4"))
+GRAD_CKPT = os.environ.get("GRAD_CKPT", "1") == "1"
+DL_WORKERS = int(os.environ.get("DL_WORKERS", "4"))
+PACK = os.environ.get("PACK", "1") == "1"   # concatenate short rows into dense max_len seqs
 
 print(f"[agentic] model={MODEL_LOCAL} out={OUTPUT_DIR}", flush=True)
 print(f"[agentic] traj={DATA_TRAJECTORIES or '(none)'} epochs={EPOCHS} max_steps={MAX_STEPS} "
@@ -104,15 +116,36 @@ def tokenize(row: dict) -> dict | None:
     return {"input_ids": ids, "attention_mask": enc["attention_mask"], "labels": labels}
 
 
+def pack(toks: list[dict], max_len: int) -> list[dict]:
+    """Greedily concatenate tokenized examples into dense max_len sequences.
+
+    Our SFT rows are mostly short (~150 tokens); padding them into a batch wastes
+    most of the compute. Packing removes padding entirely: ~thousands of short
+    rows collapse into ~hundreds of full sequences, so every token in every step
+    is useful work. (Naive concatenation — examples can attend across boundaries;
+    standard practice for SFT and an accepted minor-quality tradeoff.)"""
+    out, ids, labs = [], [], []
+    for t in toks:
+        if ids and len(ids) + len(t["input_ids"]) > max_len:
+            out.append({"input_ids": ids, "attention_mask": [1] * len(ids), "labels": labs})
+            ids, labs = [], []
+        ids = ids + t["input_ids"]
+        labs = labs + t["labels"]
+    if ids:
+        out.append({"input_ids": ids, "attention_mask": [1] * len(ids), "labels": labs})
+    return out
+
+
 def build(paths_conv: str, traj: str, oversample: int = 1) -> Dataset:
     raw = conv_rows(paths_conv) + (traj_rows(traj) * oversample if traj else [])
     toks = [t for t in (tokenize(r) for r in raw) if t is not None]
-    return Dataset.from_list(toks)
+    rows = pack(toks, MAX_LENGTH) if PACK else toks
+    return Dataset.from_list(rows)
 
 
 train_ds = build(DATA_TRAIN, DATA_TRAJECTORIES, oversample=TRAJ_OVERSAMPLE)
 val_ds = build(DATA_VAL, "")
-print(f"[agentic] tokenized train={len(train_ds)} val={len(val_ds)}", flush=True)
+print(f"[agentic] {'packed' if PACK else 'unpacked'} train={len(train_ds)} val={len(val_ds)} rows", flush=True)
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_LOCAL, dtype=torch.bfloat16, device_map={"": 0}, trust_remote_code=True)
@@ -128,19 +161,19 @@ trainer = Trainer(
         output_dir=OUTPUT_DIR,
         num_train_epochs=EPOCHS,
         max_steps=MAX_STEPS,
-        per_device_train_batch_size=1,
-        per_device_eval_batch_size=1,
-        gradient_accumulation_steps=16,
+        per_device_train_batch_size=BATCH_SIZE,
+        per_device_eval_batch_size=BATCH_SIZE,
+        gradient_accumulation_steps=GRAD_ACCUM,
         learning_rate=LR,
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
         weight_decay=0.01,
         optim="adamw_torch",
         bf16=True,
-        eval_strategy="steps", eval_steps=50,
-        save_steps=50, save_total_limit=2,
-        logging_steps=5, report_to="none",
-        gradient_checkpointing=True,
+        eval_strategy="epoch", save_strategy="epoch", save_total_limit=2,
+        logging_steps=2, report_to="none",
+        gradient_checkpointing=GRAD_CKPT,
+        dataloader_num_workers=DL_WORKERS,
         remove_unused_columns=False,
     ),
     train_dataset=train_ds,
@@ -148,8 +181,11 @@ trainer = Trainer(
     data_collator=DataCollatorForSeq2Seq(tok, model=model, padding=True, label_pad_token_id=-100),
 )
 
+print(f"[agentic] batch={BATCH_SIZE} grad_accum={GRAD_ACCUM} (eff={BATCH_SIZE * GRAD_ACCUM}) "
+      f"grad_ckpt={GRAD_CKPT} workers={DL_WORKERS}", flush=True)
 trainer.train()
 trainer.save_model(OUTPUT_DIR)
 tok.save_pretrained(OUTPUT_DIR)
-print(f"[agentic] done. adapter saved to {OUTPUT_DIR}", flush=True)
+peak = torch.cuda.max_memory_allocated() / 1e9
+print(f"[agentic] done. adapter saved to {OUTPUT_DIR}; peak GPU mem {peak:.1f} GB", flush=True)
 sys.exit(0)
