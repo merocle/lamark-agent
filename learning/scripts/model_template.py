@@ -65,7 +65,7 @@ class TemplateAdapter:
         if self.family == "gemma4":
             block = f"{_GEMMA_OPEN}\n{thinking.strip()}\n{_GEMMA_CLOSE}"
             return f"{block}\n{ans}" if ans else block
-        # qwen + nano_v3: inline <think>…</think>
+        # qwen + nano_v3 share <think>…</think> (Nemotron: special token-ids 12/13)
         block = f"{THINK_OPEN}\n{thinking.strip()}\n{THINK_CLOSE}"
         return f"{block}\n\n{ans}" if ans else block
 
