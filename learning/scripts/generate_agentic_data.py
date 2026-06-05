@@ -26,6 +26,13 @@ teacher can never inject a malformed call into training.
 Never greedy (invariant 9). Decoding defaults: temperature 0.8, top_p 0.9,
 top_k 20. Run where spark-11:4000 is reachable.
 
+Env: LITELLM_BASE_URL (default http://spark-11:4000/v1), LITELLM_API_KEY,
+LITELLM_MODEL (default "qwen3_5_moe" — the proxy's registered alias; do NOT use
+the litellm-SDK "openai/" prefix when calling the proxy directly). Only standard
+OpenAI params are sent by default; enable extras if the proxy supports them:
+LITELLM_JSON_MODE=1, LITELLM_SEND_TOP_K=1, LITELLM_THINKING_KW=1. HTTP errors
+print the proxy's response body, so a 400 shows its real cause.
+
   python generate_agentic_data.py --styles single,multi,reasoning,refusal,recover \
       --rounds 3 --per-call 6 --out ~/.lamark/data/gen_trajectories.jsonl
   python generate_agentic_data.py --dry-run        # print prompts/plan, no calls
@@ -50,7 +57,16 @@ TOOLS_YAML = REPO / "learning" / "data" / "tools.yaml"
 
 BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://spark-11:4000/v1").rstrip("/")
 API_KEY = os.environ.get("LITELLM_API_KEY", "sk-spark11")
-MODEL = os.environ.get("LITELLM_MODEL", "openai/qwen3_5_moe")
+# The model name as the PROXY has it registered. Note: the "openai/" prefix is
+# litellm-SDK provider-routing syntax — wrong when calling the proxy's OpenAI API
+# directly (often a 400). Use the bare alias; override with LITELLM_MODEL.
+MODEL = os.environ.get("LITELLM_MODEL", "qwen3_5_moe")
+# Non-standard params some strict proxies reject with HTTP 400 — opt-in only.
+# Strict JSON is requested in the prompt and parsed tolerantly, so json-mode is
+# not required; enable it if your backend supports guided JSON for cleaner output.
+JSON_MODE = os.environ.get("LITELLM_JSON_MODE", "0") == "1"
+SEND_TOP_K = os.environ.get("LITELLM_SEND_TOP_K", "0") == "1"
+SEND_THINKING_KW = os.environ.get("LITELLM_THINKING_KW", "0") == "1"
 
 _SYS = "You are Lamark, a local AI agent. Use tools when helpful; answer directly when not."
 
@@ -89,13 +105,15 @@ def catalog_text(tools: list[dict]) -> str:
 # ── LiteLLM call (stdlib only) ────────────────────────────────────────────────
 def chat(messages: list[dict], *, temperature: float, top_p: float, top_k: int,
          max_tokens: int, retries: int = 3) -> str:
-    body = {
-        "model": MODEL, "messages": messages,
-        "temperature": temperature, "top_p": top_p, "top_k": top_k,
-        "max_tokens": max_tokens, "stream": False,
-        "response_format": {"type": "json_object"},
-        "chat_template_kwargs": {"enable_thinking": False},  # want clean JSON, not the teacher's own think
-    }
+    # Minimal, standards-only body by default → maximum proxy compatibility.
+    body = {"model": MODEL, "messages": messages, "temperature": temperature,
+            "top_p": top_p, "max_tokens": max_tokens, "stream": False}
+    if JSON_MODE:
+        body["response_format"] = {"type": "json_object"}
+    if SEND_TOP_K:
+        body["top_k"] = top_k
+    if SEND_THINKING_KW:
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     data = json.dumps(body).encode()
     req = urllib.request.Request(f"{BASE_URL}/chat/completions", data=data,
                                  headers={"Content-Type": "application/json",
@@ -105,7 +123,17 @@ def chat(messages: list[dict], *, temperature: float, top_p: float, top_k: int,
             with urllib.request.urlopen(req, timeout=180) as resp:
                 obj = json.loads(resp.read())
             return obj["choices"][0]["message"]["content"] or ""
-        except (urllib.error.URLError, urllib.error.HTTPError, KeyError, json.JSONDecodeError) as e:
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "replace")[:400]
+            except Exception:
+                pass
+            if attempt == retries:
+                print(f"  [error] HTTP {e.code} {e.reason}: {detail}", file=sys.stderr)
+                return ""
+            time.sleep(2 ** attempt)
+        except (urllib.error.URLError, KeyError, json.JSONDecodeError) as e:
             if attempt == retries:
                 print(f"  [error] chat failed after {retries}: {e}", file=sys.stderr)
                 return ""

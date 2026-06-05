@@ -368,6 +368,70 @@ Most preference datasets ship as Parquet on HuggingFace. The `quality/` module n
 
 ---
 
+## Format conversion architecture
+
+**One source format. Scripts convert to model-specific tokens at runtime.**
+
+All datasets in the repository are stored in a single canonical format (Nemotron-Agentic-v1 — OpenAI-style messages with tools). The training and evaluation scripts read the model config, load its chat template, and convert the canonical format into model-specific tokens at training time. No model-specific tokenization happens during dataset collection or storage.
+
+### Data flow
+
+```
+HF dataset (mixed formats)
+  └─► transform/normalize.py  ──►  canonical.jsonl   ← ONE format stored on disk
+                                      │
+                                      │  training script:
+                                      │    1. load model → processor (auto-detects template)
+                                      │    2. apply_chat_template(canonical_messages) → model tokens
+                                      │    3. tokenize() → input_ids, attention_mask
+                                      │    4. pass to trainer
+                                      ▼
+                               model-specific tokens (Qwen3.5 / Gemma 4 / ...)
+```
+
+### Canonical schema (stored on disk)
+
+```jsonl
+{"messages": [
+  {"role": "system",   "content": "…"},
+  {"role": "user",     "content": "…"},
+  {"role": "assistant","content": "…", "reasoning_content": "…", "tool_calls": [{…}]},
+  {"role": "tool",     "tool_call_id": "call_…", "content": "…"}
+], "tools": [{…}]}
+```
+
+This is a plain OpenAI Chat Completions conversation. No model-specific tokens are embedded.
+
+### Conversion per model (applied by training script at runtime)
+
+| Model | Template source | Tool-call tokens | Thinking tokens | Notes |
+|---|---|---|---|---|
+| **Qwen3.5 / Qwen3** | `chat_template.jinja` in model repo | `\<|tool_call\>call:fn_name{args…}\<tool_call\|>` | `\<|begin_of_text\>…\<thinking\>…\<\thinking\>…` (```` thinking ```` blocks) | `assistant_only_loss` is no-op on Qwen3.5 (no `{% generation %}`); use response-template collator |
+| **Gemma 4 12B/26B/31B** | `chat_template.jinja` in model repo | `\<|tool_call\>call:fn_name{args…}\<tool_call\|>` / `\<|tool_response\>response:fn_name{…}\</tool_response\|>` | `\<|channel\>thought\n…\n<channel|>` | Encoder-free (12B) / vision encoder (26B/31B); p-RoPE on global layers; `enable_thinking=True/False` |
+| **Nemotron-3 Nano** | Custom template (Nemotron-SFT-Agentic-v1) | OpenAI-style `tool_calls` in messages | ```` thinking ```` blocks | Already aligned with our canonical format |
+
+All conversion is done by `transformers.AutoProcessor.apply_chat_template()` with the loaded model's `chat_template.jinja`. The training script loads the model, calls `apply_chat_template(messages, tools=tools, enable_thinking=…)` and the transformers library handles the rest — the tokenizer respects the model's template automatically.
+
+**No manual token rendering needed.** The template is the source of truth; the training script just delegates to it.
+
+### When to normalize vs. when to convert
+
+| Layer | Responsibility |
+|---|---|
+| **Ingestion** (`transform/normalize.py`) | Read any HF dataset format → canonical OpenAI messages + tools. Strip model-specific tokens if present; keep only `{role, content, tool_calls, reasoning_content}`. |
+| **Training** (`unsloth_lora.py` / `megatron_bridge.py`) | Load model → `processor.apply_chat_template()` → model-specific tokens → `trainer.train()`. |
+| **Eval** (`run_eval_gate.py`) | Same: canonical messages → `apply_chat_template()` → evaluate. |
+| **Storage** | Only canonical JSONL on disk. Zero model-specific content in stored datasets. |
+
+### Adding a new model
+
+1. Add the model to `docs/specs/11-model-matrix.md`.
+2. Verify `AutoProcessor.from_pretrained(model_id)` loads the chat template.
+3. Test: `processor.apply_chat_template(messages, tools=tools)` produces valid token IDs.
+4. Done — no new conversion code needed. The training script is generic over model type.
+
+---
+
 ## Evaluation benchmarks
 
 Used for eval-gate and ongoing monitoring. Do NOT train on these.
