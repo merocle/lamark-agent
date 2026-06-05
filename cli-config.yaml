@@ -1,0 +1,51 @@
+# Hermes Agent CLI Configuration — Spark-11 (litellm)
+# Place at ~/.hermes/cli-config.yaml inside the container
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  default: "openai/qwen3_5_moe"
+
+  # Use OpenAI-compatible provider for custom endpoint
+  provider: "openai"
+
+  # litellm endpoint at spark-11
+  base_url: "http://spark-11:4000/v1"
+
+  # API key — litellm typically accepts any non-empty value or no key
+  api_key: "sk-spark11"
+
+  # Qwen3.6-35B-A3B context window
+  context_length: 262144
+
+  # Never use greedy decoding with Qwen3
+  max_tokens: 8192
+
+# =============================================================================
+# Inference parameters (passed through to OpenAI API)
+# =============================================================================
+# Qwen3 models need temperature > 0 — never greedy
+# tools: temperature=0.7, top_p=0.8, top_k=20 (tool loops)
+# thinking: temperature=0.6, top_p=0.95, top_k=20
+
+# =============================================================================
+# Terminal backend — local shell inside the container
+# =============================================================================
+terminal:
+  backend: "local"
+  timeout: 180
+  lifetime_seconds: 300
+
+# =============================================================================
+# Context compression — use the same endpoint
+# =============================================================================
+# compression:
+#   enabled: true
+#   provider: "main"     # Uses OPENAI_BASE_URL + OPENAI_API_KEY
+
+# =============================================================================
+# Memory — Honcho-style persistent memory
+# =============================================================================
+# honcho:
+#   enabled: false       # Optional: requires pip install honcho-ai

@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  hermes:
+    build:
+      context: .
+      dockerfile: Dockerfile.hermes
+    image: hermes-agent:latest
+    container_name: hermes-agent
+    restart: unless-stopped
+    working_dir: /workspace
+    volumes:
+      - ./hermes-data:/root/.hermes
+      - ./workspace:/workspace
+    # Network access to spark-11 — uses host network
+    # so spark-11 hostname resolves inside the container.
+    network_mode: host
+    tty: true
+    stdin_open: true
+    environment:
+      - OPENAI_API_KEY=sk-spark11
+      - OPENAI_BASE_URL=http://spark-11:4000/v1
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8

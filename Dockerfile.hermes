@@ -1,0 +1,26 @@
+FROM mcr.microsoft.com/cbl-mariner/base/uv:2.0
+
+# Install system deps
+RUN tdnf update -y && \
+    tdnf install -y --no-cache \
+    curl git python3 nodejs npm ffmpeg ripgrep libolm-dev \
+    && tdnf clean all
+
+# Clone hermes-agent
+RUN git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent
+
+# Install Python deps
+WORKDIR /opt/hermes-agent
+RUN uv venv .venv --python 3.11 && \
+    . .venv/bin/activate && \
+    uv pip install -e ".[all]"
+
+# Config
+RUN mkdir -p /opt/data /workspace
+COPY cli-config.yaml /opt/data/cli-config.yaml
+
+WORKDIR /workspace
+ENV HERMES_HOME=/opt/data
+ENV PATH="/opt/hermes-agent/.venv/bin:${PATH}"
+
+CMD ["hermes"]
