@@ -27,8 +27,10 @@ Never greedy (invariant 9). Decoding defaults: temperature 0.8, top_p 0.9,
 top_k 20. Run where spark-11:4000 is reachable.
 
 Env: LITELLM_BASE_URL (default http://spark-11:4000/v1), LITELLM_API_KEY,
-LITELLM_MODEL (default "qwen3_5_moe" — the proxy's registered alias; do NOT use
-the litellm-SDK "openai/" prefix when calling the proxy directly). Only standard
+LITELLM_MODEL (default "qwen3_5_moe"; if that isn't a name the proxy serves, the
+script auto-resolves against /v1/models — prefer a qwen model — and prints what
+it picked; `--list-models` just prints the proxy's catalog. Do NOT use the
+litellm-SDK "openai/" prefix when calling the proxy directly). Only standard
 OpenAI params are sent by default; enable extras if the proxy supports them:
 LITELLM_JSON_MODE=1, LITELLM_SEND_TOP_K=1, LITELLM_THINKING_KW=1. HTTP errors
 print the proxy's response body, so a 400 shows its real cause.
@@ -141,6 +143,31 @@ def chat(messages: list[dict], *, temperature: float, top_p: float, top_k: int,
     return ""
 
 
+def list_models() -> list[str]:
+    """OpenAI-compatible model discovery — GET /v1/models on the proxy."""
+    req = urllib.request.Request(f"{BASE_URL}/models",
+                                 headers={"Authorization": f"Bearer {API_KEY}"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+    return [m["id"] for m in data.get("data", [])]
+
+
+def resolve_model(preferred: str) -> str:
+    """Return a model id the proxy actually serves. If `preferred` isn't registered,
+    pick a qwen model (the intended teacher) else the first available — the proxy
+    rejects unknown names with HTTP 400, so this avoids the whole batch failing."""
+    try:
+        ids = list_models()
+    except Exception as e:  # network/auth — fall back to the configured name
+        print(f"[gen] /v1/models unreachable ({e}); using model={preferred!r} as-is", file=sys.stderr)
+        return preferred
+    if not ids or preferred in ids:
+        return preferred
+    pick = next((i for i in ids if "qwen" in i.lower()), ids[0])
+    print(f"[gen] model {preferred!r} not registered; available={ids}; using {pick!r}", file=sys.stderr)
+    return pick
+
+
 def parse_json(text: str) -> dict | None:
     """Tolerant JSON extraction — strip code fences / prose around the object."""
     text = text.strip()
@@ -232,13 +259,25 @@ def main() -> int:
     ap.add_argument("--top-p", type=float, default=0.9)
     ap.add_argument("--top-k", type=int, default=20)
     ap.add_argument("--max-tokens", type=int, default=4096)
+    ap.add_argument("--list-models", action="store_true", help="print the proxy's /v1/models and exit")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    if args.list_models:
+        try:
+            print("\n".join(list_models()))
+        except Exception as e:
+            raise SystemExit(f"/v1/models failed: {e}")
+        return 0
 
     styles = [s.strip() for s in args.styles.split(",") if s.strip()]
     bad = [s for s in styles if s not in STYLES]
     if bad:
         raise SystemExit(f"unknown styles: {bad}. Choose from {list(STYLES)}")
+
+    global MODEL
+    if not args.dry_run:
+        MODEL = resolve_model(MODEL)   # use a name the proxy actually serves
 
     tools = load_adopt_tools()
     defs = af.tool_defs(tools)
