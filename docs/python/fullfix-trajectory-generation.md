@@ -162,6 +162,10 @@ python build_dataset.py --facts ../data/lamark_facts.jsonl \
 `--out-dir` and is passed to `build_dataset.py --fullfix-trajectories`, which folds
 it into the trajectory bucket alongside the template, teacher, and HF trajectories.
 
+> Full-fix trajectories carry the full core `tools[]` array. At assembly time most
+> are rendered **schema-free** (the model recognizes core tools from training instead
+> of an embedded schema block) — see [tool-internalization.md](./tool-internalization.md).
+
 ---
 
 ## Invariants honored

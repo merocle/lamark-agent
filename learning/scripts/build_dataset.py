@@ -34,7 +34,20 @@ import argparse
 import random
 from pathlib import Path
 
+import yaml
+
 import agentic_format as af
+
+REPO = Path(__file__).resolve().parents[2]
+TOOLS_YAML = REPO / "learning" / "data" / "tools.yaml"
+
+
+def core_tool_names() -> set[str]:
+    """The stable adopt-v0.1 catalog the model is taught to recognize WITHOUT an
+    embedded schema. Only these are eligible for schema-free rendering; anything
+    else (external HF tools, dynamic/MCP tools) must keep its tools[] in context."""
+    tools = yaml.safe_load(TOOLS_YAML.read_text(encoding="utf-8"))["tools"]
+    return {t["name"] for t in tools if t.get("status") == "adopt-v0.1" and t.get("name")}
 
 # ── Identity banks (data-only identity enforcement) ──────────────────────────
 CANONICAL = "Lamark, a self-improving local AI agent written in Rust that runs on your own hardware"
@@ -112,6 +125,36 @@ def facts_to_qa(facts_path: Path) -> list[dict]:
     return out
 
 
+def internalize_tools(rows: list[dict], core: set[str], embed_frac: float,
+                      rng: random.Random) -> tuple[int, int]:
+    """Teach the model to recognize the CORE catalog from training, not from an
+    embedded `tools[]` schema block — so the runtime needn't pollute every prompt
+    with schemas it already knows.
+
+    For each trajectory whose tool defs AND tool calls are entirely within `core`,
+    drop `tools` to None (render schema-free) with probability `1 - embed_frac`.
+    The retained `embed_frac` slice keeps schemas so the model still honors a
+    provided `tools[]` at serve time (dynamic / MCP tools). Rows touching any
+    non-core tool always keep their schemas — an unknown tool can't be internalized.
+    The assistant `tool_calls` are untouched, so the call target is still trained;
+    only the in-context schema is removed. Returns (internalized, kept_embedded)."""
+    internalized = embedded = 0
+    for r in rows:
+        tools = r.get("tools")
+        if not tools:
+            continue  # identity / knowledge / refusal — nothing to internalize
+        def_names = {t["function"]["name"] for t in tools}
+        call_names = {tc["function"]["name"]
+                      for m in r["messages"] if m.get("role") == "assistant"
+                      for tc in m.get("tool_calls", [])}
+        if (def_names | call_names) <= core and rng.random() >= embed_frac:
+            r["tools"] = None
+            internalized += 1
+        else:
+            embedded += 1
+    return internalized, embedded
+
+
 def _est_tokens(row: dict) -> int:
     """Rough token estimate (chars/4) for the blend report — relative shares only."""
     if "conversations" in row:
@@ -155,6 +198,11 @@ def main() -> int:
     ap.add_argument("--think-frac", type=float, default=0.35,
                     help="fraction of identity rows carrying a reasoning block")
     ap.add_argument("--val-frac", type=float, default=0.06)
+    ap.add_argument("--embed-tools-frac", type=float, default=0.25,
+                    help="fraction of CORE-catalog trajectories that keep their tools[] "
+                         "schema in context; the rest train schema-free so the model "
+                         "recognizes core tools without a polluting embedded block. "
+                         "Set 1.0 to always embed (disable internalization).")
     ap.add_argument("--seed", type=int, default=3407)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -173,7 +221,11 @@ def main() -> int:
         if path and path.exists():
             rows += [af.as_canonical(r) for r in af.read_jsonl(path)]
 
-    af.validate_rows(rows)
+    af.validate_rows(rows)  # validate WITH schemas present (keeps the narration guard honest)
+    intl, emb = internalize_tools(rows, core_tool_names(), args.embed_tools_frac, rng)
+    if intl or emb:
+        print(f"tool schemas: {intl} trajectories internalized (schema-free), "
+              f"{emb} kept embedded (embed_frac={args.embed_tools_frac})")
     _report(rows)
 
     rng.shuffle(rows)

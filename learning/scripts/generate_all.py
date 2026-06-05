@@ -62,6 +62,9 @@ def main() -> int:
     ap.add_argument("--facts", type=Path, default=DATA / "lamark_facts.jsonl",
                     help="identity/knowledge facts for build_dataset")
     ap.add_argument("--general", type=Path, default=None, help="optional general-breadth JSONL")
+    ap.add_argument("--embed-tools-frac", type=float, default=0.25,
+                    help="fraction of core-catalog trajectories that keep tools[] in context "
+                         "(rest train schema-free; passed to build_dataset). 1.0 = always embed.")
     # teacher (generate_agentic_data)
     ap.add_argument("--skip-teacher", action="store_true", help="skip the LiteLLM teacher step")
     ap.add_argument("--styles", default="single,multi,reasoning,refusal,recover")
@@ -117,7 +120,8 @@ def main() -> int:
         run(cmd, dry=args.dry_run, step="3/hf-ingest")
 
     # 4. assemble the unified canonical dataset (only wire up inputs that exist)
-    cmd = ["build_dataset.py", "--facts", str(args.facts), "--out-dir", str(out)]
+    cmd = ["build_dataset.py", "--facts", str(args.facts), "--out-dir", str(out),
+           "--embed-tools-frac", str(args.embed_tools_frac)]
     if tool_facts.exists() or args.dry_run:
         cmd += ["--tool-facts", str(tool_facts)]
     if tool_qa.exists() or args.dry_run:
