@@ -333,6 +333,38 @@ Choose the training tier based on what data you have and what you want to change
 
 ---
 
+### Implemented trainers (DGX Spark, Qwen3.5-9B) — what actually runs today
+
+The tiers above are the target taxonomy. The scripts that exist and are validated
+live in `learning/scripts/spark/`, all in the `lamark/sft:26.01` image
+(transformers 5.9 + TRL + peft + torchao + causal-conv1d + flash-linear-attention).
+Common knobs (env): `BATCH_SIZE/GRAD_ACCUM/GRAD_CKPT/PACK/DL_WORKERS/EPOCHS/LR`.
+
+| Script | Method | Trains | Notes |
+|---|---|---|---|
+| `train_sft.py` | TRL `SFTTrainer` LoRA (r=32) | prose buckets ({conversations}) | simplest; `assistant_only_loss` (see caveat) |
+| `train_sft_agentic.py` | LoRA + manual tokenize + `Trainer` | prose **+ native tool-call trajectories** (Nemotron-Agentic-v1 `{messages,tools}`) | teaches tool-call *emission*; the agentic format can't be a TRL/Arrow column, hence manual tokenize |
+| `train_molf.py` (+ `molf.py`) | **MoLF-E** (arXiv:2605.07111) | frozen base + 2 LoRA experts (r=64/128), Sparse-AdamW EPD Top-1 routing | experimental; auto-navigates Fact-vs-Med (FFT-vs-LoRA) without picking; folds to a standard LoRA adapter on export. **Why not full MoLF / full FT:** the FFT expert needs ~144 GB optimizer state on a 9B → OOM on Spark; MoLF-E keeps LoRA-level memory. |
+
+**Performance (data-driven).** A 9B LoRA used only ~26 GB of ~118 GB at batch=1.
+The win is **packing** (concatenate the mostly-short rows into dense `max_length`
+sequences — zero padding) + **flash-linear-attention** (fast gated-DeltaNet
+kernels; without it transformers logs "fast path not available" and runs ~2×
+slower). Together: a 2-epoch run ~83 min → ~24 min at ~72 GB. Naive batch-up
+*without* packing regresses (pads short rows to the batch max). Wall-clock is
+token-bound, so bigger batches mainly raise memory + cut step count.
+
+**Caveats.** (1) `assistant_only_loss` is a **no-op** on Qwen3.5 — its chat
+template lacks `{% generation %}`, so `return_assistant_tokens_mask` yields no
+mask and training is full-sequence; fix with a response-template collator if it
+matters. (2) Packing collapses the dataset to few optimizer steps — **raise
+`EPOCHS`** or identity/knowledge undertrain. (3) The raw instruct `Qwen/Qwen3.5-9B`
+**already emits native tool calls**; prose-only SFT degrades that, trajectory
+training restores it. (4) Inference must use `device_map={"":0}` (auto-offload of
+the conv layers crashes `causal_conv1d`).
+
+---
+
 ### Tier 0 — CPT (skip unless truly needed)
 
 For the rare case where you have a large unseen raw corpus (internal documentation, proprietary codebases, domain-specific pre-training text > 50 MB):
