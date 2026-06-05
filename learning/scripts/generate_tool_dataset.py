@@ -1,63 +1,62 @@
 #!/usr/bin/env python3
 """
-Generate synthetic tool-knowledge training data from learning/data/tools.yaml.
+Generate synthetic tool-knowledge + tool-call-trajectory training data from
+learning/data/tools.yaml — the authoritative catalog.
 
-Fixes the "the model confabulates about its own tools" failure by teaching it,
-from the authoritative catalog, (a) what tools exist and what they map to, and
-(b) how a tool call is shaped. Template-driven and deterministic by default
-(no API cost); pass --teacher to add gpt-5.4-mini paraphrase variety (needs
-OPENAI_API_KEY) — that only varies natural-language phrasing, never the
-tool_calls/arguments, which stay exact.
+Fixes three observed failures:
+  (a) "the model confabulates about its own tools" — taught from the catalog what
+      exists, plus NEGATIVE/typo refusals so a misspelled or unknown tool is
+      declined, not invented;
+  (b) "the model narrates `WebSearch(...)` instead of emitting a call" — taught
+      with native `tool_calls[]` trajectories that present the real tools[] schema
+      and show incoming `role:"tool"` results and outgoing tool calls;
+  (c) "malformed <think>" — a controlled fraction of rows carry a well-formed
+      reasoning block (via agentic_format.wrap_thinking).
+
+All rows are emitted in the canonical schema (agentic_format) so the train/serve
+format never drifts. Template-driven and deterministic (no API cost); args are
+valid-by-construction against each tool's JSON-Schema, so the data never teaches
+a malformed call.
 
 Subcommands:
-  facts         -> learning/data/tool_facts.jsonl          (facts schema; ROME subject-in-prompt)
-  qa            -> learning/datasets/lamark/tool_qa.jsonl   ({"conversations":[{role,value}]})
-  trajectories  -> learning/datasets/lamark/tool_trajectories.jsonl  (Nemotron-Agentic-v1)
+  facts         -> learning/data/tool_facts.jsonl              (facts schema; ROME subject-in-prompt)
+  qa            -> learning/datasets/lamark/tool_qa.jsonl       (conversations; back-compat prose bucket)
+  trajectories  -> learning/datasets/lamark/tool_trajectories.jsonl  (canonical agent trajectories)
   all           -> all three
-
-The catalog (learning/data/tools.yaml) is the single source of truth; it also
-generates the table in docs/specs/04-tooling-and-protocol.md.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 import yaml
 
+import agentic_format as af
+
 REPO = Path(__file__).resolve().parents[2]
 TOOLS_YAML = REPO / "learning" / "data" / "tools.yaml"
 
+_SYS = "You are Lamark, a local AI agent. Use tools when helpful; answer directly when not."
+
 
 def load_tools() -> list[dict]:
-    data = yaml.safe_load(TOOLS_YAML.read_text(encoding="utf-8"))
-    return data["tools"]
+    return yaml.safe_load(TOOLS_YAML.read_text(encoding="utf-8"))["tools"]
 
 
 def adopt(tools: list[dict]) -> list[dict]:
     return [t for t in tools if t.get("status") == "adopt-v0.1" and t.get("name")]
 
 
-def _conv(user: str, assistant: str) -> dict:
-    return {"conversations": [
-        {"role": "user", "value": user},
-        {"role": "assistant", "value": assistant},
-    ]}
-
-
-# ── facts ────────────────────────────────────────────────────────────────────
+# ── facts (ROME subject-in-prompt schema; unchanged shape) ────────────────────
 def build_facts(tools: list[dict]) -> list[dict]:
     out: list[dict] = []
     for t in adopt(tools):
         name = t["name"]
-        subject = f"Lamark's {name} tool"          # verbatim prefix of prompt (ROME)
+        subject = f"Lamark's {name} tool"
         origin = t.get("hermes_origin")
-        if origin:
-            target = f"is Lamark's name for the tool Hermes calls {origin}."
-        else:
-            target = "is a Lamark-specific tool with no Hermes origin."
+        target = (f"is Lamark's name for the tool Hermes calls {origin}." if origin
+                  else "is a Lamark-specific tool with no Hermes origin.")
         flag = ("read-only" if t.get("read_only")
                 else "a destructive, permission-gated tool" if t.get("destructive")
                 else "a state-changing tool")
@@ -68,7 +67,6 @@ def build_facts(tools: list[dict]) -> list[dict]:
         ]
         if origin:
             paraphrases.append(f"Which Hermes tool does Lamark's {name} correspond to?")
-        # Two facts per tool: identity/mapping, and the read-only/destructive flag.
         out.append({
             "id": f"tool-{name.lower()}-maps",
             "edit": {"prompt": subject, "subject": subject, "target_new": target},
@@ -81,85 +79,56 @@ def build_facts(tools: list[dict]) -> list[dict]:
         })
         out.append({
             "id": f"tool-{name.lower()}-flag",
-            "edit": {"prompt": subject, "subject": subject,
-                     "target_new": f"is {flag}."},
+            "edit": {"prompt": subject, "subject": subject, "target_new": f"is {flag}."},
             "paraphrases": [f"Is Lamark's {name} tool read-only?",
                             f"Can Lamark's {name} tool change state?"],
-            "neighborhood": [
-                {"prompt": "Water boils at", "expected_substring": "100"},
-            ],
+            "neighborhood": [{"prompt": "Water boils at", "expected_substring": "100"}],
             "tags": ["tooling", "capability"],
         })
     return out
 
 
-# ── qa ───────────────────────────────────────────────────────────────────────
+# ── qa (conversations; positives + negatives) ─────────────────────────────────
 def build_qa(tools: list[dict]) -> list[dict]:
     out: list[dict] = []
-    adopt_names = {t["name"] for t in adopt(tools)}
+    adopt_names = sorted(t["name"] for t in adopt(tools))
     for t in adopt(tools):
         name, origin, desc = t["name"], t.get("hermes_origin"), t.get("description", "")
-        out.append(_conv(f"What does Lamark's {name} tool do?",
-                         f"{desc}" + (f" It is Lamark's equivalent of Hermes' {origin}." if origin else " It is a Lamark-specific tool.")))
-        out.append(_conv(f"Does Lamark have a {name} tool?",
-                         f"Yes. {desc}"))
+        out.append(af.conversations_row(
+            f"What does Lamark's {name} tool do?",
+            desc + (f" It is Lamark's equivalent of Hermes' {origin}." if origin else " It is a Lamark-specific tool.")))
+        out.append(af.conversations_row(f"Does Lamark have a {name} tool?", f"Yes. {desc}"))
         if origin:
-            out.append(_conv(f"Which Hermes tool does Lamark's {name} map to?",
-                             f"Lamark's {name} maps to Hermes' {origin}."))
+            out.append(af.conversations_row(f"Which Hermes tool does Lamark's {name} map to?",
+                                            f"Lamark's {name} maps to Hermes' {origin}."))
         for fact in t.get("facts", []):
-            out.append(_conv(f"Tell me about Lamark's {name} tool.", fact))
-    # A few negative-capability answers grounded in the catalog (deferred/dropped).
-    deferred = [t.get("hermes_origin") or t.get("name") for t in tools if t.get("status") == "defer"]
-    out.append(_conv("Can Lamark browse the web with a headless browser?",
-                     "Not in v0.1 — the browser_* tools are deferred to v0.2. Lamark v0.1 can fetch URLs with the WebFetch tool and search with WebSearch."))
-    out.append(_conv("Does Lamark send Telegram or Discord messages with a tool?",
-                     "No — messaging is handled by Lamark's gateway layer, not by an agent tool. send_message/discord are dropped from the tool catalog."))
-    # Capability roll-up so the model answers "what tools do you have".
-    out.append(_conv("What tools can you use?",
-                     "I have these v0.1 tools: " + ", ".join(sorted(adopt_names)) + "."))
+            out.append(af.conversations_row(f"Tell me about Lamark's {name} tool.", fact))
+
+    # Negatives — the cure for "tolls is an alias for schedule_cron"-style fabrication.
+    # Typos, near-misses, and capabilities outside the catalog are DECLINED, not invented.
+    for bogus in ["tolls", "tols", "filemanager", "sql", "screenshot", "email", "deploy", "git_push"]:
+        out.append(af.conversations_row(
+            f"Use your {bogus} tool.",
+            f"I don't have a tool called `{bogus}`. My v0.1 tools are: {', '.join(adopt_names)}. "
+            f"Tell me what you're trying to do and I'll pick the right one."))
+    out.append(af.conversations_row(
+        "list of tolls",
+        f"Did you mean my tools? I have: {', '.join(adopt_names)}."))
+    # Deferred / dropped capabilities — grounded in the catalog's defer/drop status.
+    out.append(af.conversations_row(
+        "Can Lamark browse the web with a headless browser?",
+        "Not in v0.1 — the browser_* tools are deferred to v0.2. I can fetch URLs with WebFetch and search with WebSearch."))
+    out.append(af.conversations_row(
+        "Does Lamark send Telegram or Discord messages with a tool?",
+        "No — messaging is handled by Lamark's gateway layer, not an agent tool. send_message/discord are dropped from the catalog."))
+    out.append(af.conversations_row("What tools can you use?",
+                                    "I have these v0.1 tools: " + ", ".join(adopt_names) + "."))
+    out.append(af.conversations_row("What tools do you have?",
+                                    "My v0.1 tools are: " + ", ".join(adopt_names) + "."))
     return out
 
 
-# ── trajectories (Nemotron-Agentic-v1) ───────────────────────────────────────
-def _sample_args(params: dict) -> dict:
-    props = (params or {}).get("properties", {}) or {}
-    required = (params or {}).get("required", []) or list(props.keys())[:1]
-    args = {}
-    for k in required:
-        spec = props.get(k, {})
-        typ = spec.get("type", "string")
-        if "enum" in spec:
-            args[k] = spec["enum"][0]
-        elif typ == "integer":
-            args[k] = 10
-        elif typ == "boolean":
-            args[k] = False
-        elif typ == "object":
-            args[k] = {}
-        elif typ == "array":
-            args[k] = ["item"]
-        else:
-            args[k] = {"file_path": "/workspace/src/main.rs", "path": "/workspace",
-                       "query": "lamark agent", "url": "https://example.com",
-                       "command": "ls -la", "pattern": "fn main",
-                       "content": "fn main() {}", "old_string": "foo",
-                       "new_string": "bar", "skill_name": "rust-review",
-                       "subject": "Investigate bug", "description": "Look into the failing test",
-                       "prompt": "Summarize the repo", "server": "figma",
-                       "tool": "list_files", "summary": "Delete build artifacts",
-                       "branch": "feature/x", "plan": {}}.get(k, f"example_{k}")
-    return args
-
-
-def _openai_tools(tools: list[dict]) -> list[dict]:
-    return [{"type": "function", "function": {
-        "name": t["name"],
-        "description": t.get("description", ""),
-        "parameters": t.get("parameters", {"type": "object", "properties": {}}),
-    }} for t in adopt(tools)]
-
-
-_SYS = "You are Lamark, a local AI agent. Use tools when helpful."
+# ── trajectory inventory (valid-by-construction args, real income/outgoing) ───
 _FILES = ["src/main.rs", "src/lib.rs", "Cargo.toml", "README.md",
           "agent/crates/lamark-core/src/lib.rs", "learning/scripts/train_sft.py"]
 _QUERIES = ["the lamark agent", "rust async runtimes", "tokio vs async-std performance",
@@ -174,102 +143,149 @@ _TASKS = ["investigate the failing login test", "add docs to the provider trait"
 _SKILLS = ["rust-review", "commit-helper", "test-writer"]
 
 
-def _traj(idx, defs, user, name, args, result, final, name2=None, args2=None, result2=None):
-    """Build one Nemotron-Agentic-v1 trajectory (single- or two-step)."""
-    asst1 = {"role": "assistant", "content": None,
-             "tool_calls": [{"id": "call_1", "type": "function",
-                             "function": {"name": name, "arguments": json.dumps(args)}}]}
-    msgs = [{"role": "system", "content": _SYS}, {"role": "user", "content": user},
-            asst1, {"role": "tool", "tool_call_id": "call_1", "content": result}]
-    if name2:
-        msgs.append({"role": "assistant", "content": None,
-                     "tool_calls": [{"id": "call_2", "type": "function",
-                                     "function": {"name": name2, "arguments": json.dumps(args2)}}]})
-        msgs.append({"role": "tool", "tool_call_id": "call_2", "content": result2})
-    msgs.append({"role": "assistant", "content": final})
-    return {"uuid": f"tooltraj-{idx}", "source": "synthetic_tool_trajectory",
-            "reasoning": "off", "reducer_version": "nemotron-agentic-v1",
-            "tools": defs, "messages": msgs}
+class _Builder:
+    """Accumulates trajectories. Every ~3rd single-step row gets a reasoning block,
+    so the model sees `<think>` paired with a real tool call (not bare prose)."""
+
+    def __init__(self, defs: list[dict]):
+        self.defs = defs
+        self.rows: list[dict] = []
+        self._n = 0
+
+    def _cid(self) -> str:
+        self._n += 1
+        return f"call_{self._n}"
+
+    def step(self, user: str, name: str, args: dict, result: str, final: str,
+             *, reason: str | None = None) -> None:
+        cid = self._cid()
+        msgs = [
+            af.system_msg(_SYS), af.user_msg(user),
+            af.assistant_msg(reasoning=reason, tool_calls=[af.tool_call(cid, name, args)]),
+            af.tool_result(cid, result),
+            af.assistant_msg(final),
+        ]
+        self.rows.append(af.trajectory_row(
+            msgs, tools=self.defs, reasoning="on" if reason else "off",
+            source="tool-traj-single"))
+
+    def two_step(self, user, n1, a1, r1, mid, n2, a2, r2, final, *, reason=None) -> None:
+        c1, c2 = self._cid(), self._cid()
+        msgs = [
+            af.system_msg(_SYS), af.user_msg(user),
+            af.assistant_msg(reasoning=reason, tool_calls=[af.tool_call(c1, n1, a1)]),
+            af.tool_result(c1, r1),
+            af.assistant_msg(mid, tool_calls=[af.tool_call(c2, n2, a2)]),
+            af.tool_result(c2, r2),
+            af.assistant_msg(final),
+        ]
+        self.rows.append(af.trajectory_row(msgs, tools=self.defs, reasoning="on" if reason else "off",
+                                           source="tool-traj-multi"))
+
+    def recover(self, user, name, args, error, retry_args, result, final) -> None:
+        """Tool returns an error (incoming) -> assistant retries with fixed args
+        (outgoing). Teaches error handling, not just happy-path calls."""
+        c1, c2 = self._cid(), self._cid()
+        msgs = [
+            af.system_msg(_SYS), af.user_msg(user),
+            af.assistant_msg(tool_calls=[af.tool_call(c1, name, args)]),
+            af.tool_result(c1, error),
+            af.assistant_msg(reasoning="The call failed; I'll correct the arguments and retry.",
+                             tool_calls=[af.tool_call(c2, name, retry_args)]),
+            af.tool_result(c2, result),
+            af.assistant_msg(final),
+        ]
+        self.rows.append(af.trajectory_row(msgs, tools=self.defs, reasoning="on",
+                                           source="tool-traj-recover"))
+
+    def refuse(self, user: str, answer: str) -> None:
+        """A trajectory where the right move is NO tool call — tools[] are present
+        but the assistant declines/answers directly. Counter-teaches confabulation."""
+        msgs = [af.system_msg(_SYS), af.user_msg(user),
+                af.assistant_msg(answer, reasoning="No catalog tool fits this; I should answer directly.")]
+        self.rows.append(af.trajectory_row(msgs, tools=self.defs, reasoning="on",
+                                           source="tool-traj-refuse"))
 
 
 def build_trajectories(tools: list[dict]) -> list[dict]:
-    """Template-driven native tool-call trajectories — single + two-step combos.
+    b = _Builder(af.tool_defs(tools))
+    names = sorted(t["name"] for t in adopt(tools))
 
-    Args are valid-by-construction against each tool's schema, so the data never
-    teaches a malformed call. Variety comes from the cross-product of files /
-    queries / symbols / commands, not an LLM."""
-    defs = _openai_tools(tools)
-    names = {t["name"] for t in adopt(tools)}
-    out: list[dict] = []
-    i = 0
-
-    def add(*a, **k):
-        nonlocal i
-        out.append(_traj(i, defs, *a, **k))
-        i += 1
-
-    # ── single-step ──
-    for f in _FILES:
-        add(f"Show me the contents of {f}.", "Read", {"file_path": f},
-            "fn main() { println!(\"hi\"); }", f"That file defines the entry point.")
-    for q in _QUERIES:
-        add(f"Search the web for {q}.", "WebSearch", {"query": q},
-            f'[{{"title":"{q}","url":"https://example.com"}}]', f"Here are the top results for {q}.")
-    for s in _SYMS:
-        add(f"Find where {s} is defined.", "Grep", {"pattern": s},
-            f"src/main.rs:1: {s}", f"{s} is defined in src/main.rs.")
-    for c in _CMDS:
-        add(f"Run `{c}`.", "Bash", {"command": c}, "ok", "Done.")
+    # single-step, every 3rd with reasoning
+    for i, f in enumerate(_FILES):
+        b.step(f"Show me the contents of {f}.", "Read", {"file_path": f},
+               'fn main() { println!("hi"); }', "That file defines the entry point.",
+               reason=f"The user wants to see {f}; I'll read it." if i % 3 == 0 else None)
+    for i, q in enumerate(_QUERIES):
+        b.step(f"Search the web for {q}.", "WebSearch", {"query": q},
+               f'[{{"title":"{q}","url":"https://example.com"}}]', f"Here are the top results for {q}.",
+               reason="This needs current web data, so I'll search." if i % 3 == 0 else None)
+    for i, s in enumerate(_SYMS):
+        b.step(f"Find where {s} is defined.", "Grep", {"pattern": s},
+               f"src/main.rs:1: {s}", f"{s} is defined in src/main.rs.",
+               reason="A code search is the right tool here." if i % 3 == 0 else None)
+    for i, c in enumerate(_CMDS):
+        b.step(f"Run `{c}`.", "Bash", {"command": c}, "ok", "Done.",
+               reason="The user asked me to run a shell command." if i % 3 == 0 else None)
     for u in _URLS:
-        add(f"Fetch and summarize {u}.", "WebFetch", {"url": u}, "<page text>", "Summarized.")
+        b.step(f"Fetch and summarize {u}.", "WebFetch", {"url": u}, "<page text>", "Summarized.")
     for q in _QUERIES[:4]:
-        add(f"What do you remember about {q}?", "MemorySearch", {"query": q},
-            "no prior notes", f"I have no stored notes on {q} yet.")
+        b.step(f"What do you remember about {q}?", "MemorySearch", {"query": q},
+               "no prior notes", f"I have no stored notes on {q} yet.")
     for n in _NOTES:
-        add(f"Remember that {n}.", "MemoryWrite", {"content": n}, "saved", "Noted.")
+        b.step(f"Remember that {n}.", "MemoryWrite", {"content": n}, "saved", "Noted.")
     for t in _TASKS:
-        add(f"Add a task to {t}.", "TaskCreate", {"subject": t, "description": t},
-            "task #1 created", "Task added.")
+        b.step(f"Add a task to {t}.", "TaskCreate", {"subject": t, "description": t},
+               "task #1 created", "Task added.")
     for sk in _SKILLS:
-        add(f"Open the {sk} skill.", "SkillView", {"skill_name": sk}, "# skill body", "Opened.")
+        b.step(f"Open the {sk} skill.", "SkillView", {"skill_name": sk}, "# skill body", "Opened.")
     for ext, lang in [("**/*.rs", "Rust"), ("**/*.py", "Python"), ("**/*.toml", "TOML")]:
-        add(f"List the {lang} files.", "Glob", {"pattern": ext}, "a.rs\nb.rs", "Listed.")
-    add("Search the web — and only do that.", "WebSearch", {"query": "rust 2024 edition"},
-        "[]", "No results.")
+        b.step(f"List the {lang} files.", "Glob", {"pattern": ext}, "a.rs\nb.rs", "Listed.")
 
-    # ── two-step combos ──
+    # two-step combos
     for ext, lang in [("**/*.rs", "Rust"), ("**/*.toml", "TOML")]:
         f = "src/main.rs" if "rs" in ext else "Cargo.toml"
-        add(f"Find the {lang} files, then read the first one.",
-            "Glob", {"pattern": ext}, f"{f}\nother",
-            f"The first {lang} file does X.", name2="Read", args2={"file_path": f},
-            result2="fn main() {}")
+        b.two_step(f"Find the {lang} files, then read the first one.",
+                   "Glob", {"pattern": ext}, f"{f}\nother", f"Found them; reading {f}.",
+                   "Read", {"file_path": f}, "fn main() {}", f"The first {lang} file defines main.",
+                   reason="First list, then read the first hit.")
     for s in _SYMS[:3]:
-        add(f"Find {s} and show its file.", "Grep", {"pattern": s}, "src/main.rs:1",
-            f"{s} lives in src/main.rs.", name2="Read", args2={"file_path": "src/main.rs"},
-            result2=f"{s} ...")
+        b.two_step(f"Find {s} and show its file.", "Grep", {"pattern": s}, "src/main.rs:1",
+                   "Located it; opening the file.", "Read", {"file_path": "src/main.rs"},
+                   f"{s} ...", f"{s} lives in src/main.rs.")
     for c in ["ls", "git status"]:
-        add(f"Run `{c}`, then read Cargo.toml.", "Bash", {"command": c}, "Cargo.toml\nsrc",
-            "Here's the manifest.", name2="Read", args2={"file_path": "Cargo.toml"},
-            result2="[package]\nname=\"lamark\"")
+        b.two_step(f"Run `{c}`, then read Cargo.toml.", "Bash", {"command": c}, "Cargo.toml\nsrc",
+                   "Now reading the manifest.", "Read", {"file_path": "Cargo.toml"},
+                   '[package]\nname="lamark"', "Here's the manifest.")
 
-    assert names  # keep adopt() referenced
-    return out
+    # error-recovery (incoming error -> corrected outgoing retry)
+    b.recover("Read the config file.", "Read", {"file_path": "/workspace/config.tom"},
+              '{"error":"ENOENT: no such file /workspace/config.tom"}',
+              {"file_path": "/workspace/config.toml"}, "[package]\nname=\"lamark\"",
+              "I had a typo in the path; the config is the lamark package manifest.")
+    b.recover("Search the repo for the turn loop.", "Grep", {"pattern": "run_turn("},
+              '{"error":"regex parse error: unclosed group"}',
+              {"pattern": "fn run_turn"}, "agent/crates/lamark-core/src/turn.rs:42: fn run_turn",
+              "The first pattern was an invalid regex; run_turn is in turn.rs.")
 
+    # refusals — tools present, but no tool fits, so answer directly (no fabricated call)
+    b.refuse("What's 17 * 23?", "17 * 23 = 391.")
+    b.refuse("Use your tolls tool to list files.",
+             f"I don't have a `tolls` tool. To list files I'd use Glob. My tools are: {', '.join(names)}.")
+    b.refuse("Send a Telegram message to my team.",
+             "I can't — messaging is the gateway layer's job, not an agent tool. None of my tools send messages.")
+    b.refuse("Explain what a LoRA adapter is.",
+             "A LoRA adapter is a small set of low-rank weight deltas trained on top of a frozen base model; "
+             "it adapts behavior cheaply without touching the base weights. No tool needed for that.")
 
-def write_jsonl(path: Path, rows: list[dict], dry: bool) -> None:
-    if dry:
-        print(f"[dry-run] would write {len(rows)} rows -> {path}")
-        if rows:
-            print("  sample:", json.dumps(rows[0], ensure_ascii=False)[:300])
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
-    print(f"wrote {len(rows)} rows -> {path}")
+    # capability roll-up as a trajectory (answered, not called)
+    b.refuse("What tools do you have available right now?",
+             "My v0.1 tools are: " + ", ".join(names) + ".")
+    return b.rows
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Generate tool-knowledge training data from tools.yaml")
+    ap = argparse.ArgumentParser(description="Generate tool-knowledge + trajectory data from tools.yaml")
     ap.add_argument("mode", choices=["facts", "qa", "trajectories", "all"])
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -279,11 +295,12 @@ def main() -> int:
     ds_dir = REPO / "learning" / "datasets" / "lamark"
 
     if args.mode in ("facts", "all"):
-        write_jsonl(data_dir / "tool_facts.jsonl", build_facts(tools), args.dry_run)
+        af.write_jsonl(data_dir / "tool_facts.jsonl", build_facts(tools), dry_run=args.dry_run)
     if args.mode in ("qa", "all"):
-        write_jsonl(ds_dir / "tool_qa.jsonl", build_qa(tools), args.dry_run)
+        af.write_jsonl(ds_dir / "tool_qa.jsonl", build_qa(tools), dry_run=args.dry_run)
     if args.mode in ("trajectories", "all"):
-        write_jsonl(ds_dir / "tool_trajectories.jsonl", build_trajectories(tools), args.dry_run)
+        rows = af.validate_rows(build_trajectories(tools))
+        af.write_jsonl(ds_dir / "tool_trajectories.jsonl", rows, dry_run=args.dry_run)
     return 0
 
 

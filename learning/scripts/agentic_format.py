@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +40,12 @@ def wrap_thinking(reasoning: str, answer: str) -> str:
 
     The exact, matched-tag shape is the whole point — it is the discipline the
     model must learn so it never emits a stray `</think>` or visible
-    "Thinking Process:" prose at inference."""
-    return f"{THINK_OPEN}\n{reasoning.strip()}\n{THINK_CLOSE}\n\n{answer.strip()}"
+    "Thinking Process:" prose at inference. When `answer` is empty (a turn whose
+    only output is a tool call), just the think block is emitted — no dangling
+    blank line for the chat template to render."""
+    block = f"{THINK_OPEN}\n{reasoning.strip()}\n{THINK_CLOSE}"
+    body = answer.strip()
+    return f"{block}\n\n{body}" if body else block
 
 
 def split_thinking(content: str) -> tuple[str | None, str]:
@@ -158,6 +163,7 @@ def validate_row(row: dict) -> None:
     msgs = row.get("messages")
     if not msgs:
         raise FormatError("empty messages")
+    tool_names = [t["function"]["name"] for t in (row.get("tools") or [])]
     open_calls: set[str] = set()
     saw_assistant = False
     for m in msgs:
@@ -169,6 +175,12 @@ def validate_row(row: dict) -> None:
                 n_open, n_close = content.count(THINK_OPEN), content.count(THINK_CLOSE)
                 if n_open != n_close:
                     raise FormatError(f"unbalanced think tags ({n_open} open, {n_close} close)")
+                # The narration anti-pattern: writing `WebSearch(...)` as prose instead
+                # of emitting a tool_call. A grounded refusal that merely names a tool
+                # ("the Read tool") is fine — only `Name(` matches.
+                for n in tool_names:
+                    if re.search(rf"\b{re.escape(n)}\s*\(", content):
+                        raise FormatError(f"assistant narrates {n}(...) instead of emitting a tool_call")
             for tc in m.get("tool_calls", []):
                 open_calls.add(tc["id"])
                 json.loads(tc["function"]["arguments"])  # must be valid JSON
@@ -180,8 +192,6 @@ def validate_row(row: dict) -> None:
                 raise FormatError(f"tool result {cid!r} has no matching tool_call")
     if not saw_assistant:
         raise FormatError("no assistant turn to learn from")
-    if row.get("tools") and not any(m.get("tool_calls") for m in msgs if m.get("role") == "assistant"):
-        raise FormatError("tools[] present but no assistant tool_calls — teaches narration")
 
 
 def validate_rows(rows: list[dict]) -> list[dict]:
